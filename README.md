@@ -66,6 +66,26 @@ self.view = scrollView;
 
 You can also create an `SCEEditorView` directly and assign it to an `NSScrollView`'s `documentView`. Access the editor and its properties on the main thread.
 
+## Find and incremental search
+
+`SCETextSearchQuery` describes a search with `SCETextSearchOptions`: case-sensitive matching, whole words, and ICU regular expressions. Searches ignore case by default. Whole-word matching treats letters, combining marks, numbers, and the underscore as word characters, like double-click word selection. In regular expressions, `^` and `$` match at line boundaries. Empty matches are skipped, and match ranges count UTF-16 code units.
+
+Assigning `editor.searchQuery` highlights every match. The editor searches an O(1) buffer snapshot on a private serial queue, cancels superseded searches, and applies results on the main thread only when the document revision is unchanged. After an edit, matches outside the edited range move with the text until the next result arrives. `selectNextSearchMatch` and `selectPreviousSearchMatch` wrap around the document; when results are pending, they search synchronously first. `SCEEditorSearchResultsDidChangeNotification` reports new results, and `searchError` reports invalid patterns.
+
+`SCEFindBarView` provides the search interface. On macOS 26 and later, the search field, match navigation, and close button are Liquid Glass shapes (`NSGlassEffectView`) in an `NSGlassEffectContainerView`; earlier systems use `NSVisualEffectView` capsules. The field shows the current match position and toggles for case, whole words, and regular expressions. Typing selects the first match at or after the caret position where the search began. Return and Shift-Return move between matches, and Escape ends the search:
+
+```objc
+SCEFindBarView *findBar = [[SCEFindBarView alloc] initWithFrame:NSZeroRect];
+findBar.editor = editor;
+findBar.dismissalHandler = ^{
+    findBar.hidden = YES;
+};
+// Position the find bar over the editor, show it, then focus the search field.
+[findBar beginSearch];
+```
+
+The demo places the find bar over the editor's top trailing corner and adds **Edit > Find** commands: Find (Command-F), Find Next (Command-G), Find Previous (Shift-Command-G), and Use Selection for Find (Command-E).
+
 ## Optional JSON and JavaScript highlighting
 
 A host that depends only on the `SourceEditor` product does not compile or link Tree-sitter. The editor defaults to `syntaxHighlighter == nil` and supports plain text editing independently. To enable highlighting, add the `SourceEditorTreeSitter` product to the host target:
@@ -144,6 +164,7 @@ Caches use logical line indices. Every edit adjusts both layouts and semantic st
 - Arrow-key movement, Shift selection, Option word movement, Command line and document navigation, and page movement.
 - Input-method marked text, commit, cancellation, and screen-coordinate queries. Each composition produces one undo transaction.
 - Read-only mode, text and selection notifications, and basic accessibility text and selection interfaces.
+- Background document search with literal, whole-word, case-sensitive, and regular expression matching, viewport match highlighting, wrapping navigation, and a Liquid Glass find bar.
 - Optional JSON and JavaScript syntax highlighting, independent themes, background incremental parsing, and viewport queries.
 
 All public positions and `NSRange` values count UTF-16 code units. Line indices start at zero. LF and CRLF are preserved, and a trailing newline adds an empty final line. The optional parser adapter converts these coordinates to Tree-sitter byte positions.
@@ -161,6 +182,7 @@ The existing checks cover:
 - Core Text grapheme hit testing, tab advances, unchanged-line cache reuse, and selection changes without layout reconstruction.
 - Visible-line cache bounds, local invalidation, scrolling, and drawing-surface sizing after shortening a 100,000-line document.
 - Storage construction and random insertion and deletion timings for a 100,000-line buffer. These Debug storage measurements do not establish end-to-end input latency.
+- Search options, line anchors, UTF-16 match ranges, invalid patterns, and match limits; background results, wrapping navigation, synchronous navigation during pending searches, match movement after edits, and highlight pixels confined to matching lines.
 - Substitute highlighters, Core Text colors, unchanged-style cache reuse, stale-result rejection, highlighter removal, theme changes without parsing, and CRLF and UTF-16 edit coordinates.
 - 120 randomized Unicode and newline edits for each supported language, comparing incremental and complete parses after every edit, including incomplete syntax.
 - Nested templates, regular expressions, emoji at input chunk boundaries, range queries in a 20,000-line document, parse reuse during scrolling, multiline captures, document identity, request coalescing, and cancellation.
@@ -175,6 +197,8 @@ Protocol checks do not establish real input-method behavior. Candidate-window pl
 4. **Language services.** Extend the optional highlighting interface for additional parsers and languages before adding diagnostics, completion, Language Server Protocol support, or multiple carets.
 
 Scope guides match bracket characters, including those in strings and comments. Each caret movement scans at most 131,072 UTF-16 code units in either direction. Brackets beyond that limit do not produce a guide. Syntax-tree-based matching remains a possible extension.
+
+Each search materializes the document on the search queue, which takes O(document length) time and memory, and every edit restarts the search while a query is set. An editor collects at most 100,000 matches per query. Matches are not adjusted to grapheme boundaries, so a search for a base letter can match inside a combined character sequence. Replace is not implemented.
 
 Standalone CR line endings, rectangular selection, code folding, language services, and complete VoiceOver parameterized navigation are not implemented. Highlighting uses syntax structure without scope binding or embedded-language parsing. Tree-sitter uses 32-bit byte coordinates. Unsupported document sizes, more than 20,000 captures in one query, or queries exceeding the match limit produce plain text for the requested range. Performance and interaction coverage require further validation before comparison with established editors.
 

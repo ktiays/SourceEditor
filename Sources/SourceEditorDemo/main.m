@@ -13,6 +13,7 @@ typedef NS_ENUM(NSInteger, SCEDemoSyntaxLanguage) {
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) SCEEditorView *editor;
 @property (nonatomic, strong) SCEStatusBarView *statusBar;
+@property (nonatomic, strong) SCEFindBarView *findBar;
 @property (nonatomic, strong) NSMenu *syntaxMenu;
 // Available syntax languages in display order.
 @property (nonatomic, copy) NSArray<NSNumber *> *availableLanguages;
@@ -173,6 +174,7 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
         [self.statusBar.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
         [self.statusBar.heightAnchor constraintEqualToConstant:SCEStatusBarHeight],
     ]];
+    [self createFindBarInView:content];
     [NSNotificationCenter.defaultCenter addObserver:self
                                            selector:@selector(updateStatus:)
                                                name:SCEEditorTextDidChangeNotification
@@ -190,6 +192,78 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.editor];
     [NSApp activateIgnoringOtherApps:YES];
+}
+
+// The find bar floats over the top trailing corner of the editor. It stays in
+// the view hierarchy while hidden so that its search string persists.
+- (void)createFindBarInView:(NSView *)content {
+    self.findBar = [[SCEFindBarView alloc] initWithFrame:NSZeroRect];
+    self.findBar.translatesAutoresizingMaskIntoConstraints = NO;
+    self.findBar.editor = self.editor;
+    self.findBar.hidden = YES;
+    __weak SCEDemoDelegate *weakSelf = self;
+    self.findBar.dismissalHandler = ^{
+        [weakSelf setFindBarVisible:NO];
+    };
+    [content addSubview:self.findBar];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.findBar.topAnchor constraintEqualToAnchor:content.topAnchor constant:12],
+        [self.findBar.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [self.findBar.leadingAnchor constraintGreaterThanOrEqualToAnchor:content.leadingAnchor constant:20],
+    ]];
+}
+
+- (void)setFindBarVisible:(BOOL)visible {
+    if (visible == !self.findBar.hidden) {
+        return;
+    }
+    if (visible) {
+        self.findBar.alphaValue = 0;
+        self.findBar.hidden = NO;
+    }
+    [NSAnimationContext
+        runAnimationGroup:^(NSAnimationContext *context) {
+            context.duration = 0.18;
+            self.findBar.animator.alphaValue = visible ? 1 : 0;
+        }
+        completionHandler:^{
+            if (!visible && self.findBar.alphaValue == 0) {
+                self.findBar.hidden = YES;
+            }
+        }];
+}
+
+- (void)showFindBar:(id)sender {
+    [self setFindBarVisible:YES];
+    [self.findBar beginSearch];
+}
+
+- (void)findNextMatch:(id)sender {
+    if (!self.findBar.isSearching) {
+        [self showFindBar:sender];
+    }
+    [self.findBar findNext:sender];
+}
+
+- (void)findPreviousMatch:(id)sender {
+    if (!self.findBar.isSearching) {
+        [self showFindBar:sender];
+    }
+    [self.findBar findPrevious:sender];
+}
+
+- (void)useSelectionForFind:(id)sender {
+    NSRange selection = self.editor.selectedRange;
+    if (!selection.length) {
+        return;
+    }
+    self.findBar.searchString = [self.editor.bufferSnapshot substringWithUTF16Range:selection];
+    if (!self.findBar.isSearching) {
+        [self setFindBarVisible:YES];
+        [self.findBar beginSearch];
+    }
+    // Return focus to the editor so that Command-G continues from the selection.
+    [self.window makeFirstResponder:self.editor];
 }
 
 - (void)updateStatus:(NSNotification *)notification {
@@ -229,6 +303,19 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     [self addItem:@"Copy" action:@selector(copy:) key:@"c" toMenu:edit];
     [self addItem:@"Paste" action:@selector(paste:) key:@"v" toMenu:edit];
     [self addItem:@"Select All" action:@selector(selectAll:) key:@"a" toMenu:edit];
+    [edit addItem:NSMenuItem.separatorItem];
+    NSMenuItem *findItem = [self addItem:@"Find" action:nil key:@"" toMenu:edit];
+    NSMenu *find = [[NSMenu alloc] initWithTitle:@"Find"];
+    findItem.submenu = find;
+    [self addItem:@"Find\u2026" action:@selector(showFindBar:) key:@"f" toMenu:find].target = self;
+    [self addItem:@"Find Next" action:@selector(findNextMatch:) key:@"g" toMenu:find].target = self;
+    NSMenuItem *findPrevious = [self addItem:@"Find Previous"
+                                      action:@selector(findPreviousMatch:)
+                                         key:@"g"
+                                      toMenu:find];
+    findPrevious.target = self;
+    findPrevious.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [self addItem:@"Use Selection for Find" action:@selector(useSelectionForFind:) key:@"e" toMenu:find].target = self;
     NSMenuItem *viewItem = [[NSMenuItem alloc] init];
     [main addItem:viewItem];
     NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];

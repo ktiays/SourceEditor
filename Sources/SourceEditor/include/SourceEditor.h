@@ -2,3 +2,5 @@
 #import "SCEEditorView.h"
 #import "SCESyntaxHighlighting.h"
 #import "SCESyntaxTheme.h"
+#import "SCETextSearch.h"
+#import "SCEFindBarView.h"

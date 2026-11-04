@@ -689,6 +689,181 @@ static void SCECheckLayoutAndViewport(void) {
     puts("PASS layout: cache reuse, Unicode hit testing, tabs, viewport bounds, 100k lines, IME screen coordinates");
 }
 
+static NSArray<NSValue *> *SCESearch(NSString *text, NSString *pattern, SCETextSearchOptions options) {
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:text];
+    SCETextSearchQuery *query = [[SCETextSearchQuery alloc] initWithPattern:pattern options:options];
+    return [query rangesOfMatchesInBuffer:buffer maximumCount:SCETextSearchDefaultMaximumMatchCount error:NULL];
+}
+
+static BOOL SCERangesEqual(NSArray<NSValue *> *ranges, NSArray<NSValue *> *expected) {
+    return [ranges isEqualToArray:expected];
+}
+
+#define SCE_RANGE(location, length) [NSValue valueWithRange:NSMakeRange((location), (length))]
+
+// Runs the main run loop until background search results are applied.
+static BOOL SCEWaitForSearchResults(SCEEditorView *editor) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+    while (editor.isSearchPending && deadline.timeIntervalSinceNow > 0) {
+        [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    return !editor.isSearchPending;
+}
+
+static uint8_t *SCERenderBackground(SCEEditorView *editor, size_t width, size_t height) {
+    uint8_t *pixels = calloc(height, width * 4);
+    CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
+    CGContextRef bitmap = CGBitmapContextCreate(pixels, width, height, 8, width * 4, colors,
+                                                kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(colors);
+    [NSGraphicsContext saveGraphicsState];
+    NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithCGContext:bitmap flipped:NO];
+    [editor drawBackgroundSurface:editor.subviews.firstObject];
+    [NSGraphicsContext restoreGraphicsState];
+    CGContextRelease(bitmap);
+    return pixels;
+}
+
+static void SCECheckSearchQueries(void) {
+    NSString *text = @"Find find FIND\nfinder _find find_ refind";
+    CHECK(SCERangesEqual(SCESearch(text, @"find", 0),
+                         @[
+                             SCE_RANGE(0, 4), SCE_RANGE(5, 4), SCE_RANGE(10, 4), SCE_RANGE(15, 4), SCE_RANGE(23, 4),
+                             SCE_RANGE(28, 4), SCE_RANGE(36, 4)
+                         ]),
+          "literal search must ignore case by default");
+    CHECK(SCERangesEqual(SCESearch(text, @"find", SCETextSearchOptionCaseSensitive),
+                         @[ SCE_RANGE(5, 4), SCE_RANGE(15, 4), SCE_RANGE(23, 4), SCE_RANGE(28, 4), SCE_RANGE(36, 4) ]),
+          "case-sensitive search must match letter case");
+    CHECK(SCERangesEqual(SCESearch(text, @"find", SCETextSearchOptionWholeWord),
+                         @[ SCE_RANGE(0, 4), SCE_RANGE(5, 4), SCE_RANGE(10, 4) ]),
+          "whole-word search must treat letters and underscores as word characters");
+    CHECK(SCERangesEqual(SCESearch(@"a.b axb", @"a.b", 0), @[ SCE_RANGE(0, 3) ]),
+          "literal search must escape regular expression metacharacters");
+    CHECK(SCERangesEqual(SCESearch(@"a.b axb", @"a.b", SCETextSearchOptionRegularExpression),
+                         @[ SCE_RANGE(0, 3), SCE_RANGE(4, 3) ]),
+          "regular expression search must interpret metacharacters");
+    CHECK(SCERangesEqual(SCESearch(@"one\r\ntwo\nthree", @"^t\\w+$", SCETextSearchOptionRegularExpression),
+                         @[ SCE_RANGE(5, 3), SCE_RANGE(9, 5) ]),
+          "anchors must match at LF and CRLF line boundaries");
+    CHECK(SCESearch(@"abc", @"^", SCETextSearchOptionRegularExpression).count == 0, "empty matches must be skipped");
+    CHECK(SCESearch(@"abc", @"", 0).count == 0, "an empty pattern must produce no matches");
+    // A combining acute accent after "e" continues the word, so whole-word
+    // search must not match the base letter alone.
+    CHECK(SCESearch(@"café cafe", @"cafe", SCETextSearchOptionWholeWord).count == 1,
+          "whole-word search must treat combining marks as word characters");
+    // A non-BMP emoji occupies two UTF-16 code units before the match.
+    CHECK(SCERangesEqual(SCESearch(@"\U0001f642 value", @"value", 0), @[ SCE_RANGE(3, 5) ]),
+          "match ranges must count UTF-16 code units");
+    NSError *error = nil;
+    SCETextSearchQuery *invalid = [[SCETextSearchQuery alloc] initWithPattern:@"(unclosed"
+                                                                      options:SCETextSearchOptionRegularExpression];
+    CHECK(![invalid rangesOfMatchesInBuffer:[[SCETextBuffer alloc] initWithString:@"text"]
+                               maximumCount:10
+                                      error:&error] &&
+              error,
+          "an invalid regular expression must return nil and an error");
+    SCETextSearchQuery *letters = [[SCETextSearchQuery alloc] initWithPattern:@"a" options:0];
+    CHECK([letters rangesOfMatchesInBuffer:[[SCETextBuffer alloc] initWithString:@"aaaaa"] maximumCount:3 error:NULL]
+                  .count == 3,
+          "match collection must stop at the maximum count");
+    CHECK([letters isEqual:[[SCETextSearchQuery alloc] initWithPattern:@"a" options:0]] &&
+              ![letters isEqual:[[SCETextSearchQuery alloc] initWithPattern:@"a"
+                                                                    options:SCETextSearchOptionCaseSensitive]],
+          "query equality must compare pattern and options");
+    puts("PASS search queries: case, whole words, regular expressions, line anchors, UTF-16 ranges, errors, limits");
+}
+
+static void SCECheckEditorSearch(void) {
+    SCEEditorView *editor = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+    editor.showsLineNumbers = NO;
+    editor.string = @"alpha beta\nbeta gamma\ndelta beta";
+    editor.selectedRange = NSMakeRange(7, 0);
+    __block NSUInteger notifications = 0;
+    id observer = [NSNotificationCenter.defaultCenter addObserverForName:SCEEditorSearchResultsDidChangeNotification
+                                                                  object:editor
+                                                                   queue:nil
+                                                              usingBlock:^(NSNotification *note) {
+                                                                  notifications++;
+                                                              }];
+    editor.searchQuery = [[SCETextSearchQuery alloc] initWithPattern:@"beta" options:0];
+    CHECK(editor.isSearchPending && editor.numberOfSearchMatches == 0, "a new query must start a pending search");
+    CHECK(SCEWaitForSearchResults(editor), "background search must complete");
+    CHECK(notifications == 1, "applying background results must post one notification");
+    CHECK(SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(6, 4), SCE_RANGE(11, 4), SCE_RANGE(28, 4) ]),
+          "editor matches differ from the query result");
+    CHECK(editor.currentSearchMatchIndex == NSNotFound, "a caret must not be reported as a current match");
+    CHECK([editor selectNextSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(11, 4)),
+          "next match must start after a caret inside a match");
+    CHECK(editor.currentSearchMatchIndex == 1, "the selected match must be the current match");
+    CHECK([editor selectNextSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(28, 4)),
+          "next match must follow the current match");
+    CHECK([editor selectNextSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(6, 4)),
+          "next match must wrap to the first match");
+    CHECK([editor selectPreviousSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(28, 4)),
+          "previous match must wrap to the last match");
+    CHECK([editor selectPreviousSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(11, 4)),
+          "previous match must precede the current match");
+
+    // Insert two characters at the start of line 1: earlier matches stay,
+    // later matches move, and the intersecting match is removed.
+    editor.selectedRange = NSMakeRange(12, 0);
+    [editor insertText:@"XY" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK(editor.isSearchPending, "an edit must mark search results as pending");
+    CHECK(SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(6, 4), SCE_RANGE(30, 4) ]),
+          "matches must move with the text until new results arrive");
+    CHECK(SCEWaitForSearchResults(editor), "search after an edit must complete");
+    CHECK(SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(6, 4), SCE_RANGE(30, 4) ]),
+          "search after an edit must not match the split word");
+    [editor insertText:@"beta " replacementRange:NSMakeRange(0, 0)];
+    CHECK([editor selectNextSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(11, 4)),
+          "navigation must search synchronously while results are pending");
+    CHECK(!editor.isSearchPending && editor.numberOfSearchMatches == 3, "synchronous search must apply results");
+
+    editor.searchQuery = [[SCETextSearchQuery alloc] initWithPattern:@"[" options:SCETextSearchOptionRegularExpression];
+    CHECK(SCEWaitForSearchResults(editor) && editor.searchError && editor.numberOfSearchMatches == 0,
+          "an invalid pattern must report an error without matches");
+    CHECK(![editor selectNextSearchMatch], "navigation without matches must fail");
+    notifications = 0;
+    editor.searchQuery = nil;
+    CHECK(notifications == 1 && !editor.searchError && !editor.isSearchPending, "clearing the query must reset state");
+
+    // Highlight rendering: only the line containing the match changes.
+    editor.string = @"none\nnone\nthe target\n";
+    editor.selectedRange = NSMakeRange(0, 0);
+    CGFloat lineHeight = [[editor valueForKey:@"lineHeight"] doubleValue];
+    uint8_t *plain = SCERenderBackground(editor, 400, 200);
+    editor.searchQuery = [[SCETextSearchQuery alloc] initWithPattern:@"target" options:0];
+    CHECK(SCEWaitForSearchResults(editor), "highlight search must complete");
+    uint8_t *highlighted = SCERenderBackground(editor, 400, 200);
+    size_t changed = 0;
+    BOOL contained = YES;
+    // Bitmap rows run from the bottom of the unflipped context; the editor's
+    // y coordinate grows downward from the top.
+    CGFloat lineTop = 12 + 2 * lineHeight;
+    for (size_t row = 0; row < 200; row++) {
+        for (size_t x = 0; x < 400; x++) {
+            size_t offset = (row * 400 + x) * 4;
+            if (memcmp(plain + offset, highlighted + offset, 4) != 0) {
+                changed++;
+                CGFloat y = 200 - (CGFloat)row;
+                if (y < floor(lineTop) || y > ceil(lineTop + lineHeight) + 1) {
+                    contained = NO;
+                }
+            }
+        }
+    }
+    free(plain);
+    free(highlighted);
+    CHECK(changed > 0, "search matches must be highlighted");
+    CHECK(contained, "match highlights must stay within the matching line");
+    editor.string = @"replaced";
+    CHECK(editor.numberOfSearchMatches == 0 && editor.isSearchPending, "replacing the document must clear matches");
+    CHECK(SCEWaitForSearchResults(editor) && editor.numberOfSearchMatches == 0, "new document search differs");
+    [NSNotificationCenter.defaultCenter removeObserver:observer];
+    puts("PASS editor search: background results, navigation and wrapping, edits, errors, highlight rendering");
+}
+
 static int SCECompareDoubles(const void *a, const void *b) {
     double lhs = *(const double *)a;
     double rhs = *(const double *)b;
@@ -730,6 +905,8 @@ int main(int argc, const char *argv[]) {
         SCECheckSelectionPainting();
         SCECheckScopeGuide();
         SCECheckLayoutAndViewport();
+        SCECheckSearchQueries();
+        SCECheckEditorSearch();
         SCECheckCount += SCECheckSyntaxCore();
         SCEBenchmark();
         printf("All %lu checks passed.\n", (unsigned long)SCECheckCount);
