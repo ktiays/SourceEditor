@@ -189,6 +189,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     _editable = YES;
     _showsLineNumbers = YES;
     _showsScopeGuide = YES;
+    _focusable = YES;
     _scopeGuideBrackets = NSMakeRange(NSNotFound, 0);
     _scopeGuideX = NAN;
     _automaticIndentationEnabled = YES;
@@ -249,7 +250,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (BOOL)acceptsFirstResponder {
-    return YES;
+    return _focusable;
 }
 
 - (BOOL)isOpaque {
@@ -257,6 +258,10 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (BOOL)becomeFirstResponder {
+    // NSWindow calls this without consulting acceptsFirstResponder.
+    if (!_focusable) {
+        return NO;
+    }
     [self.inputContext activate];
     [self selectionDidChange];
     // AppKit commits the new first responder after this method returns.
@@ -618,7 +623,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     _scopeGuideRevision = _buffer.revision;
     _scopeGuideHead = _head;
     _scopeGuideX = NAN;
-    _scopeGuideBrackets = _showsScopeGuide
+    _scopeGuideBrackets = _showsScopeGuide && _focusable
                               ? SCEEnclosingMultilineBracketRange(_buffer, _head, SCEBracketScopeDefaultScanLimit)
                               : NSMakeRange(NSNotFound, 0);
     if (_scopeGuideBrackets.location != NSNotFound) {
@@ -643,7 +648,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (void)drawScopeGuideInSurface:(NSView *)surface {
-    if (!_showsScopeGuide) {
+    if (!_showsScopeGuide || !_focusable) {
         return;
     }
     [self updateScopeGuide];
@@ -668,6 +673,19 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     }
     [NSColor.tertiaryLabelColor setFill];
     NSRectFillUsingOperation(guide, NSCompositingOperationSourceOver);
+}
+
+- (void)setFocusable:(BOOL)focusable {
+    if (_focusable == focusable) {
+        return;
+    }
+    _focusable = focusable;
+    if (!focusable && self.window.firstResponder == self) {
+        [self.window makeFirstResponder:nil];
+    }
+    _hasScopeGuideState = NO;
+    [self updateCaret];
+    _backgroundSurface.needsDisplay = YES;
 }
 
 - (void)setEditable:(BOOL)editable {
@@ -748,7 +766,8 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     NSUInteger line = [_buffer lineIndexForUTF16Offset:_head];
     CGFloat y = SCEInset + line * _lineHeight;
     BOOL visible = y + _lineHeight > NSMinY(_viewportRect) && y < NSMaxY(_viewportRect);
-    BOOL active = _editable && visible && !self.selectedRange.length && self.window.isKeyWindow &&
+    // Read-only documents keep the caret so that it can still be moved and extended into a selection.
+    BOOL active = _focusable && visible && !self.selectedRange.length && self.window.isKeyWindow &&
                   self.window.firstResponder == self;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -869,7 +888,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
     CGContextSaveGState(context);
     NSRange selection = self.selectedRange;
-    if (!selection.length) {
+    if (!selection.length && _focusable) {
         NSUInteger line = [_buffer lineIndexForUTF16Offset:_head];
         NSRect rect = NSMakeRect(SCEHighlightHorizontalPadding, SCEInset + line * _lineHeight - NSMinY(_viewportRect),
                                  MAX(0, NSWidth(surface.bounds) - 2 * SCEHighlightHorizontalPadding), _lineHeight);
@@ -880,7 +899,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
         CGContextAddPath(context, path);
         CGContextFillPath(context);
         CGPathRelease(path);
-    } else {
+    } else if (selection.length) {
         CGFloat rightEdge = MAX(self.gutterWidth, NSWidth(surface.bounds) - SCEHighlightHorizontalPadding);
         NSRect selectionBounds =
             NSMakeRect(self.gutterWidth, 0, rightEdge - self.gutterWidth, NSHeight(surface.bounds));
@@ -1854,7 +1873,10 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
 // MARK: Pointer selection
 
 - (void)mouseDown:(NSEvent *)event {
-    [self.window makeFirstResponder:self];
+    // A non-focusable editor selects text without taking focus from the current first responder.
+    if (_focusable) {
+        [self.window makeFirstResponder:self];
+    }
     [self finishComposition];
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     NSUInteger offset = [self UTF16OffsetForDocumentPoint:point];

@@ -161,7 +161,9 @@ Caches use logical line indices. Every edit adjusts both layouts and semantic st
 - Grapheme-boundary movement and deletion that preserve emoji, zero-width joiner sequences, and combining marks. CRLF is treated as one editing boundary.
 - Arrow-key movement, Shift selection, Option word movement, Command line and document navigation, and page movement.
 - Input-method marked text, commit, cancellation, and screen-coordinate queries. Each composition produces one undo transaction.
-- Read-only mode, text and selection notifications, and basic accessibility text and selection interfaces.
+- Read-only mode, which keeps the caret, navigation, and selection while rejecting edits.
+- Non-focusable mode (`focusable = NO`), independent of read-only mode: the view never becomes the first responder and draws no caret, current-line highlight, or scope guide, while mouse selection still works.
+- Text and selection notifications, and basic accessibility text and selection interfaces.
 - Background document search with literal, whole-word, case-sensitive, and regular expression matching, viewport match highlighting, wrapping navigation, and a Liquid Glass find bar.
 - Optional JSON syntax highlighting, independent themes, background incremental parsing, and viewport queries.
 

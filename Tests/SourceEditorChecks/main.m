@@ -164,6 +164,16 @@ static void SCECheckEditing(void) {
     [editor insertText:@"blocked" replacementRange:NSMakeRange(NSNotFound, 0)];
     SCECommand(editor, @selector(deleteBackward:));
     CHECK([editor.string isEqualToString:before], "read-only mode must reject edits");
+    editor.selectedRange = NSMakeRange(0, 0);
+    SCECommand(editor, @selector(moveRight:));
+    CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(1, 0)), "read-only mode must move the caret");
+    SCECommand(editor, @selector(moveWordRightAndModifySelection:));
+    CHECK(editor.selectedRange.location == 1 && editor.selectedRange.length > 0,
+          "read-only mode must extend the selection");
+    // Leave the general pasteboard untouched; a read-only cut returns before copying.
+    [editor paste:nil];
+    [editor cut:nil];
+    CHECK([editor.string isEqualToString:before], "read-only mode must reject paste and cut");
     puts("PASS editing: graphemes, CRLF, undo/redo, navigation, indentation, read-only mode");
 }
 
@@ -685,8 +695,40 @@ static void SCECheckLayoutAndViewport(void) {
     [editor insertText:@"one\ntwo" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK(NSMaxY(editor.subviews.firstObject.frame) <= NSHeight(editor.frame) + 1,
           "deleting the document tail must clamp the viewport");
+
+    editor.string = @"if (ready) {\n    run()\n}";
+    editor.selectedRange = NSMakeRange(17, 0);
+    CHECK([window makeFirstResponder:editor] && window.firstResponder == editor, "the editor must accept focus");
+    CHECK(editor.scopeGuideBracketRange.location != NSNotFound, "a focusable editor must show its scope guide");
+    editor.focusable = NO;
+    CHECK(window.firstResponder != editor, "becoming non-focusable must resign first responder");
+    // NSWindow reports success after taking first responder itself, so check the responder instead.
+    [window makeFirstResponder:editor];
+    CHECK(![editor acceptsFirstResponder] && window.firstResponder != editor,
+          "a non-focusable editor must refuse first responder");
+    CHECK(editor.scopeGuideBracketRange.location == NSNotFound, "a non-focusable editor must hide its scope guide");
+    NSRect wordRect = [window convertRectFromScreen:[editor firstRectForCharacterRange:NSMakeRange(18, 0)
+                                                                           actualRange:NULL]];
+    NSEvent *doubleClick = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                              location:NSMakePoint(NSMinX(wordRect) + 1, NSMidY(wordRect))
+                                         modifierFlags:0
+                                             timestamp:0
+                                          windowNumber:window.windowNumber
+                                               context:nil
+                                           eventNumber:0
+                                            clickCount:2
+                                              pressure:1];
+    [editor mouseDown:doubleClick];
+    if (!NSEqualRanges(editor.selectedRange, NSMakeRange(17, 3))) {
+        NSLog(@"Double-click selected %@", NSStringFromRange(editor.selectedRange));
+    }
+    CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(17, 3)) && window.firstResponder != editor,
+          "a non-focusable editor must keep mouse selection without taking focus");
+    editor.focusable = YES;
+    CHECK([window makeFirstResponder:editor], "restoring focusability must accept focus again");
     [window close];
-    puts("PASS layout: cache reuse, Unicode hit testing, tabs, viewport bounds, 100k lines, IME screen coordinates");
+    puts("PASS layout: cache reuse, Unicode hit testing, tabs, viewport bounds, 100k lines, IME screen coordinates, "
+         "non-focusable mode");
 }
 
 static NSArray<NSValue *> *SCESearch(NSString *text, NSString *pattern, SCETextSearchOptions options) {

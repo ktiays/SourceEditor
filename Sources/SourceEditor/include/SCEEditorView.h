@@ -24,6 +24,12 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 @property (nonatomic, copy) NSFont *font;
 @property (nonatomic) NSRange selectedRange;
 @property (nonatomic, getter=isEditable) BOOL editable;
+/// Whether the view can become the first responder. When NO, the view never
+/// takes keyboard focus and resigns it if it has it, and it draws no caret,
+/// current-line highlight or scope guide. Mouse selection still works, and the
+/// selection is drawn in the inactive color. Independent of `editable`.
+/// Defaults to YES.
+@property (nonatomic, getter=isFocusable) BOOL focusable;
 @property (nonatomic) BOOL showsLineNumbers;
 /// Draws a vertical guide through the lines inside the innermost (), [] or {}
 /// pair around the caret, at the opening line's indentation. A guide requires
