@@ -13,7 +13,6 @@ esac
 if [[ "${1:-all}" == "--core-only" ]]; then
     export SOURCE_EDITOR_CORE_ONLY=1
 else
-    ./script/bootstrap.sh
     export SOURCE_EDITOR_CORE_ONLY=0
 fi
 swift run SourceEditorChecks

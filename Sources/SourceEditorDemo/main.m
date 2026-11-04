@@ -6,7 +6,6 @@
 typedef NS_ENUM(NSInteger, SCEDemoSyntaxLanguage) {
     SCEDemoSyntaxLanguagePlainText,
     SCEDemoSyntaxLanguageJSON,
-    SCEDemoSyntaxLanguageJavaScript,
 };
 
 @interface SCEDemoDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
@@ -23,7 +22,7 @@ typedef NS_ENUM(NSInteger, SCEDemoSyntaxLanguage) {
 // Status bar configuration is read from user defaults and launch arguments.
 // Each value is an array or a comma-separated string:
 //   SCEStatusBarItems   line, column, lineCount, language (all by default)
-//   SCESyntaxLanguages  plaintext, json, javascript (all by default)
+//   SCESyntaxLanguages  plaintext, json (all by default)
 // An empty value hides the corresponding control; one language displays a fixed label.
 static NSString *const SCEDemoStatusBarItemsKey = @"SCEStatusBarItems";
 static NSString *const SCEDemoSyntaxLanguagesKey = @"SCESyntaxLanguages";
@@ -57,8 +56,6 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
             return @"Plain Text";
         case SCEDemoSyntaxLanguageJSON:
             return @"JSON";
-        case SCEDemoSyntaxLanguageJavaScript:
-            return @"JavaScript";
     }
     return @"Plain Text";
 }
@@ -69,10 +66,9 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     NSDictionary<NSString *, NSNumber *> *identifiers = @{
         @"plaintext" : @(SCEDemoSyntaxLanguagePlainText),
         @"json" : @(SCEDemoSyntaxLanguageJSON),
-        @"javascript" : @(SCEDemoSyntaxLanguageJavaScript),
     };
     NSMutableArray<NSNumber *> *languages = [NSMutableArray array];
-    for (NSString *name in SCEDemoStringList(SCEDemoSyntaxLanguagesKey, @[ @"plaintext", @"json", @"javascript" ])) {
+    for (NSString *name in SCEDemoStringList(SCEDemoSyntaxLanguagesKey, @[ @"plaintext", @"json" ])) {
         NSNumber *language = identifiers[name.lowercaseString];
         if (!language) {
             NSLog(@"Ignoring unknown syntax language \"%@\"", name);
@@ -363,9 +359,7 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     SCETreeSitterHighlighter *highlighter = nil;
     if (syntaxLanguage != SCEDemoSyntaxLanguagePlainText) {
         NSError *error = nil;
-        SCETreeSitterLanguage language =
-            syntaxLanguage == SCEDemoSyntaxLanguageJSON ? SCETreeSitterLanguageJSON : SCETreeSitterLanguageJavaScript;
-        highlighter = [[SCETreeSitterHighlighter alloc] initWithLanguage:language error:&error];
+        highlighter = [[SCETreeSitterHighlighter alloc] initWithLanguage:SCETreeSitterLanguageJSON error:&error];
         if (!highlighter) {
             NSLog(@"Could not load syntax highlighter: %@", error.localizedDescription);
             syntaxLanguage = SCEDemoSyntaxLanguagePlainText;

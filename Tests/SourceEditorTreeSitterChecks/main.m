@@ -12,13 +12,7 @@ int main(int argc, const char *argv[]) {
             NSLog(@"%@", error);
             return 1;
         }
-        SCETreeSitterHighlighter *javascript =
-            [[SCETreeSitterHighlighter alloc] initWithLanguage:SCETreeSitterLanguageJavaScript error:&error];
-        if (!javascript) {
-            NSLog(@"%@", error);
-            return 1;
-        }
-        puts("Tree-sitter grammars and queries loaded.");
+        puts("Tree-sitter grammar and query loaded.");
         SCECheckTreeSitter();
     }
     return 0;

@@ -2,7 +2,7 @@
 import Foundation
 import PackageDescription
 
-// The core can build without downloading the optional parser's C sources.
+// The core can build without resolving the optional parser packages.
 let isCoreOnly = ProcessInfo.processInfo.environment["SOURCE_EDITOR_CORE_ONLY"] == "1"
 
 let package = Package(
@@ -17,6 +17,13 @@ let package = Package(
                 .library(name: "SourceEditorTreeSitter", targets: ["SourceEditorTreeSitter"]),
                 .executable(name: "SourceEditorDemo", targets: ["SourceEditorDemo"]),
             ]),
+    // Tree-sitter v0.27 removed its SwiftPM manifest, so the runtime stays on v0.26.
+    dependencies: isCoreOnly
+        ? []
+        : [
+            .package(url: "https://github.com/tree-sitter/tree-sitter", .upToNextMinor(from: "0.26.13")),
+            .package(url: "https://github.com/tree-sitter/tree-sitter-json", .upToNextMinor(from: "0.24.8")),
+        ],
     targets: [
         .target(
             name: "SourceEditor",
@@ -39,35 +46,11 @@ let package = Package(
             ? []
             : [
                 .target(
-                    name: "SCETreeSitterRuntime",
-                    path: "Vendor/tree-sitter/lib",
-                    sources: ["src/lib.c"],
-                    publicHeadersPath: "include",
-                    cSettings: [.headerSearchPath("src")]
-                ),
-                .target(
-                    name: "SCETreeSitterJSONGrammar",
-                    path: "Vendor/tree-sitter-json",
-                    exclude: ["LICENSE", "queries", "src/node-types.json"],
-                    sources: ["src/parser.c"],
-                    publicHeadersPath: "bindings/swift/TreeSitterJSON",
-                    cSettings: [.headerSearchPath("src")]
-                ),
-                .target(
-                    name: "SCETreeSitterJavaScriptGrammar",
-                    path: "Vendor/tree-sitter-javascript",
-                    exclude: ["LICENSE", "queries", "src/node-types.json"],
-                    sources: ["src/parser.c", "src/scanner.c"],
-                    publicHeadersPath: "bindings/swift/TreeSitterJavaScript",
-                    cSettings: [.headerSearchPath("src")]
-                ),
-                .target(
                     name: "SourceEditorTreeSitter",
                     dependencies: [
                         "SourceEditor",
-                        "SCETreeSitterRuntime",
-                        "SCETreeSitterJSONGrammar",
-                        "SCETreeSitterJavaScriptGrammar",
+                        .product(name: "TreeSitter", package: "tree-sitter"),
+                        .product(name: "TreeSitterJSON", package: "tree-sitter-json"),
                     ],
                     resources: [.copy("Queries")],
                     publicHeadersPath: "include"

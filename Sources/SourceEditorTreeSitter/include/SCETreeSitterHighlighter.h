@@ -5,7 +5,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSUInteger, SCETreeSitterLanguage) {
     SCETreeSitterLanguageJSON,
-    SCETreeSitterLanguageJavaScript,
 };
 
 FOUNDATION_EXPORT NSErrorDomain const SCETreeSitterErrorDomain;

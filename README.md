@@ -2,34 +2,33 @@
 
 A macOS code editor component focused on text rendering, predictable editing costs, and native input handling.
 
-Distributed as a Swift package, with Objective-C libraries, a demo application, and automated checks. Only the required `Package.swift` manifest uses Swift. SourceEditor supports macOS 14 and later. The core has no third-party dependencies or unsafe compiler flags. The optional Tree-sitter module uses pinned C runtime and grammar sources downloaded during dependency setup, without a Swift wrapper or remote SwiftPM dependency.
+Distributed as a Swift package, with Objective-C libraries, a demo application, and automated checks. Only the required `Package.swift` manifest uses Swift. SourceEditor supports macOS 14 and later. The core has no third-party dependencies or unsafe compiler flags. The optional Tree-sitter module depends on the upstream [tree-sitter](https://github.com/tree-sitter/tree-sitter) runtime and [tree-sitter-json](https://github.com/tree-sitter/tree-sitter-json) grammar packages and calls their C API directly, without a Swift wrapper.
 
 ## Getting started
 
 ```sh
-./script/bootstrap.sh
 swift build
 ./script/build_and_run.sh
 ./script/test.sh
 ```
 
-`bootstrap.sh` requires Python 3 and curl. It downloads missing dependencies, verifies their pinned SHA-256 checksums, and caches them outside Git. The demo and full test scripts initialize dependencies automatically and work offline once the sources are installed. See [Vendor/README.md](Vendor/README.md) for dependency metadata and cache behavior.
+SwiftPM resolves the Tree-sitter packages on first build. Tree-sitter v0.27 removed its SwiftPM manifest, so the runtime is constrained to the v0.26 series.
 
-To build or check only the core from a fresh checkout without downloading dependencies:
+To build or check only the core without resolving those packages:
 
 ```sh
 SOURCE_EDITOR_CORE_ONLY=1 swift build --target SourceEditor
 ./script/test.sh --core-only
 ```
 
-`SourceEditor` is the standalone editor library; `SourceEditorTreeSitter` is the optional syntax highlighting library. The AppKit demo defaults to Plain Text. Use the language control in the status bar or the **Syntax** menu to select Plain Text, JSON, or JavaScript while preserving the document and undo history. The status bar uses an `NSVisualEffectView` over the scrolling editor, with separate indicator and separator views. Scroll insets keep the last line and caret above it. If a highlighter cannot initialize, the demo uses Plain Text.
+`SourceEditor` is the standalone editor library; `SourceEditorTreeSitter` is the optional syntax highlighting library. The AppKit demo defaults to Plain Text. Use the language control in the status bar or the **Syntax** menu to select Plain Text or JSON while preserving the document and undo history. The status bar uses an `NSVisualEffectView` over the scrolling editor, with separate indicator and separator views. Scroll insets keep the last line and caret above it. If a highlighter cannot initialize, the demo uses Plain Text.
 
 The status bar items and available languages are configurable. `SCEStatusBarView.items` sets the items and their order: `line`, `column`, `lineCount`, and `language`. The language item appears at the trailing edge. `languageTitles` defines the available choices. An empty list hides the language item, one title displays a fixed label, and two or more titles display a pop-up button. When no items are visible, `hasVisibleItems` returns `NO`; the demo hides the bar and removes its scroll insets.
 
 The demo reads both settings from user defaults. Each accepts a comma-separated string or an array; an empty value selects no items:
 
 ```sh
-open dist/SourceEditorDemo.app --args -SCEStatusBarItems 'line,column,language' -SCESyntaxLanguages 'json,javascript'
+open dist/SourceEditorDemo.app --args -SCEStatusBarItems 'line,column,language' -SCESyntaxLanguages 'plaintext,json'
 open dist/SourceEditorDemo.app --args -SCEStatusBarItems ''      # Hide the status bar.
 open dist/SourceEditorDemo.app --args -SCESyntaxLanguages 'json' # Use a fixed JSON language label.
 ```
@@ -86,7 +85,7 @@ findBar.dismissalHandler = ^{
 
 The demo places the find bar over the editor's top trailing corner and adds **Edit > Find** commands: Find (Command-F), Find Next (Command-G), Find Previous (Shift-Command-G), and Use Selection for Find (Command-E).
 
-## Optional JSON and JavaScript highlighting
+## Optional JSON highlighting
 
 A host that depends only on the `SourceEditor` product does not compile or link Tree-sitter. The editor defaults to `syntaxHighlighter == nil` and supports plain text editing independently. To enable highlighting, add the `SourceEditorTreeSitter` product to the host target:
 
@@ -96,8 +95,7 @@ A host that depends only on the `SourceEditor` product does not compile or link 
 
 NSError *error = nil;
 editor.syntaxHighlighter = [[SCETreeSitterHighlighter alloc]
-    initWithLanguage:SCETreeSitterLanguageJavaScript error:&error];
-// Use SCETreeSitterLanguageJSON for JSON documents.
+    initWithLanguage:SCETreeSitterLanguageJSON error:&error];
 
 // Restore plain text editing, cancel pending requests, and clear syntax colors.
 editor.syntaxHighlighter = nil;
@@ -111,7 +109,7 @@ Highlighting follows these steps:
 
 1. The main thread submits an O(1) rope snapshot, an exact edit description, and a query range covering the visible lines plus six lines on either side.
 2. The highlighter builds or incrementally updates a syntax tree on a private serial queue. The initial parse reads the complete document; later parses use `ts_tree_edit` and reuse the previous tree. Consecutive requests are coalesced, and superseded parsing can be canceled.
-3. Queries return captures intersecting the requested range. Multiline comments and template strings retain their full document ranges. Highlighting does not require an attributed string for the complete document.
+3. Queries return captures intersecting the requested range. Multiline comments and strings retain their full document ranges. Highlighting does not require an attributed string for the complete document.
 4. The main thread checks the document revision and request sequence before applying a result. Semantic ranges are assigned to the line cache. Only lines whose colors change rebuild their `CTLine` objects.
 
 The parser reads UTF-16 little-endian chunks directly from the rope through a C input callback. It does not copy the complete document or convert it to UTF-8. Tree-sitter byte offsets and columns are twice the corresponding UTF-16 code-unit counts. Chunk boundaries preserve surrogate pairs. Snapshots carry document identifiers so that independent documents with equal revisions cannot reuse each other's syntax trees.
@@ -126,9 +124,9 @@ editor.syntaxTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{
 }];
 ```
 
-The supplied queries cover JSON keys, strings, escapes, numbers, and constants, along with JavaScript keywords, functions, classes, properties, comments, regular expressions, and template interpolation. Query files are in `Sources/SourceEditorTreeSitter/Queries`. They use structural captures without requiring query predicates or language services.
+The supplied query covers JSON keys, strings, escapes, numbers, constants, comments, and punctuation. Query files are in `Sources/SourceEditorTreeSitter/Queries`. They use structural captures without requiring query predicates or language services.
 
-Pinned versions, archive checksums, and extraction paths are recorded in `Vendor/versions.json`. Licenses remain in the downloaded sources and `Vendor/THIRD_PARTY_NOTICES.txt`. SwiftPM embeds the query resource bundle in host applications. The demo build script also copies that bundle and the third-party notices into `.app/Contents/Resources`. Hosts distributing binaries manually must include both resources.
+Licenses remain in the resolved package sources and `THIRD_PARTY_NOTICES.txt`. SwiftPM embeds the query resource bundle in host applications. The demo build script also copies that bundle and the third-party notices into `.app/Contents/Resources`. Hosts distributing binaries manually must include both resources.
 
 ## Architecture
 
@@ -141,7 +139,7 @@ SourceEditor uses AppKit for native interaction and Core Text for font layout, f
 | `SCELineLayoutCache` | Layout, hit testing, selection geometry | Creates `CTLine` objects on demand; invalidates intersecting lines and shifts subsequent cache entries after edits |
 | `SCEEditorView` | AppKit interaction and component integration | `NSTextInputClient`, standard editing commands, undo, mouse selection, and scrolling |
 | `SCESyntaxHighlighter` and `SCESyntaxTheme` | Highlighting interface and presentation | Semantic UTF-16 ranges, asynchronous revision checks, and separate parsing and color configuration |
-| `SourceEditorTreeSitter` | Optional JSON and JavaScript parsing | Pinned C grammars, incremental background parsing, and viewport capture queries |
+| `SourceEditorTreeSitter` | Optional JSON parsing | Upstream C runtime and grammar packages, incremental background parsing, and viewport capture queries |
 
 Edits access intersecting rope chunks without constructing an `NSAttributedString` for the complete document. Line lookup traverses the tree. Snapshots share immutable nodes, making copies O(1). Reading `editor.string` or `buffer.string` materializes the complete document in O(N) time; avoid these reads in per-keystroke callbacks.
 
@@ -165,7 +163,7 @@ Caches use logical line indices. Every edit adjusts both layouts and semantic st
 - Input-method marked text, commit, cancellation, and screen-coordinate queries. Each composition produces one undo transaction.
 - Read-only mode, text and selection notifications, and basic accessibility text and selection interfaces.
 - Background document search with literal, whole-word, case-sensitive, and regular expression matching, viewport match highlighting, wrapping navigation, and a Liquid Glass find bar.
-- Optional JSON and JavaScript syntax highlighting, independent themes, background incremental parsing, and viewport queries.
+- Optional JSON syntax highlighting, independent themes, background incremental parsing, and viewport queries.
 
 All public positions and `NSRange` values count UTF-16 code units. Line indices start at zero. LF and CRLF are preserved, and a trailing newline adds an empty final line. The optional parser adapter converts these coordinates to Tree-sitter byte positions.
 
@@ -184,8 +182,8 @@ The existing checks cover:
 - Storage construction and random insertion and deletion timings for a 100,000-line buffer. These Debug storage measurements do not establish end-to-end input latency.
 - Search options, line anchors, UTF-16 match ranges, invalid patterns, and match limits; background results, wrapping navigation, synchronous navigation during pending searches, match movement after edits, and highlight pixels confined to matching lines.
 - Substitute highlighters, Core Text colors, unchanged-style cache reuse, stale-result rejection, highlighter removal, theme changes without parsing, and CRLF and UTF-16 edit coordinates.
-- 120 randomized Unicode and newline edits for each supported language, comparing incremental and complete parses after every edit, including incomplete syntax.
-- Nested templates, regular expressions, emoji at input chunk boundaries, range queries in a 20,000-line document, parse reuse during scrolling, multiline captures, document identity, request coalescing, and cancellation.
+- 120 randomized Unicode and newline edits to a JSON document, comparing incremental and complete parses after every edit, including incomplete syntax.
+- Emoji at input chunk boundaries, range queries in a 20,000-line document, parse reuse during scrolling, multiline captures, document identity, request coalescing, and cancellation.
 
 Protocol checks do not establish real input-method behavior. Candidate-window placement and continuous composition with Chinese and Japanese input methods require manual testing. Visual rendering, native shortcuts, Unicode paste, and horizontal scrolling also require application-level review when affected by a change.
 

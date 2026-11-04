@@ -13,7 +13,6 @@ DISPLAY_NAME="SourceEditor"
 SOURCE_EDITOR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SOURCE_EDITOR_ROOT"
 APP_BUNDLE="$SOURCE_EDITOR_ROOT/dist/$APP_NAME.app"
-./script/bootstrap.sh
 export SOURCE_EDITOR_CORE_ONLY=0
 
 if [[ "$MODE" == "--preview" ]]; then
@@ -36,9 +35,9 @@ if [[ -d "$QUERY_BUNDLE" ]]; then
   mkdir -p "$APP_BUNDLE/Contents/Resources"
   cp -R "$QUERY_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
 fi
-if [[ -f "$SOURCE_EDITOR_ROOT/Vendor/THIRD_PARTY_NOTICES.txt" ]]; then
+if [[ -f "$SOURCE_EDITOR_ROOT/THIRD_PARTY_NOTICES.txt" ]]; then
   mkdir -p "$APP_BUNDLE/Contents/Resources"
-  cp "$SOURCE_EDITOR_ROOT/Vendor/THIRD_PARTY_NOTICES.txt" "$APP_BUNDLE/Contents/Resources/"
+  cp "$SOURCE_EDITOR_ROOT/THIRD_PARTY_NOTICES.txt" "$APP_BUNDLE/Contents/Resources/"
 fi
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

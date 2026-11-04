@@ -77,43 +77,23 @@ static void SCECheckLanguages(void) {
     SCECheckKind(result, json, @"null", 0, SCESyntaxTokenKeyword);
     SCECheckKind(result, json, @"{", 0, SCESyntaxTokenPunctuation);
 
-    NSString *javascript =
-        @"const lineCount = 42;\nasync function formatLine(title) {\n// \u4e2d\u6587\U0001f642\nreturn `Line ${title.toUpperCase()} ${42 + 1}!`;\n}\n"
-         "class Document {}\nconst isEditable = () => true;\nconst pattern = /x+/gi;\nconst nested = `outer ${`inner ${lineCount}`}`;";
-    buffer = [[SCETextBuffer alloc] initWithString:javascript];
-    result = SCEHighlight(SCECreateHighlighter(SCETreeSitterLanguageJavaScript), buffer,
-                          NSMakeRange(0, buffer.lengthUTF16), nil);
-    SCECheckKind(result, javascript, @"const", 0, SCESyntaxTokenKeyword);
-    SCECheckKind(result, javascript, @"formatLine", 0, SCESyntaxTokenFunction);
-    SCECheckKind(result, javascript, @"// \u4e2d\u6587\U0001f642", 0, SCESyntaxTokenComment);
-    SCECheckKind(result, javascript, @"Line ${", 0, SCESyntaxTokenString);
-    SCECheckKind(result, javascript, @"${title", 0, SCESyntaxTokenPunctuation);
-    SCECheckKind(result, javascript, @"${title", 2, SCESyntaxTokenVariable);
-    SCECheckKind(result, javascript, @"toUpperCase", 0, SCESyntaxTokenFunction);
-    SCECheckKind(result, javascript, @"42", 0, SCESyntaxTokenNumber);
-    SCECheckKind(result, javascript, @"Document", 0, SCESyntaxTokenType);
-    SCECheckKind(result, javascript, @"isEditable =", 0, SCESyntaxTokenFunction);
-    SCECheckKind(result, javascript, @"/x+/gi", 1, SCESyntaxTokenString);
-    SCECheckKind(result, javascript, @"inner", 0, SCESyntaxTokenString);
-    SCECheckKind(result, javascript, @"${lineCount", 2, SCESyntaxTokenVariable);
-
-    NSString *opening = @"const text = \"";
+    NSString *opening = @"{\"text\": \"";
     NSMutableString *boundary = [opening mutableCopy];
     [boundary appendString:[@" " stringByPaddingToLength:4095 - opening.length withString:@" " startingAtIndex:0]];
-    [boundary appendString:@"\U0001f642\";\r\nconst after = 123;"];
+    // The emoji's surrogate pair straddles the first 4,096-code-unit input chunk.
+    [boundary appendString:@"\U0001f642\",\r\n\"after\": 123}"];
     buffer = [[SCETextBuffer alloc] initWithString:boundary];
-    result = SCEHighlight(SCECreateHighlighter(SCETreeSitterLanguageJavaScript), buffer,
-                          NSMakeRange(0, buffer.lengthUTF16), nil);
+    result =
+        SCEHighlight(SCECreateHighlighter(SCETreeSitterLanguageJSON), buffer, NSMakeRange(0, buffer.lengthUTF16), nil);
     SCECheckKind(result, boundary, @"\U0001f642", 0, SCESyntaxTokenString);
-    SCECheckKind(result, boundary, @"after", 0, SCESyntaxTokenVariable);
+    SCECheckKind(result, boundary, @"after", 0, SCESyntaxTokenProperty);
     SCECheckKind(result, boundary, @"123", 0, SCESyntaxTokenNumber);
     NSError *error = nil;
     CHECK([[SCETreeSitterHighlighter alloc] initWithLanguage:(SCETreeSitterLanguage)NSUIntegerMax
                                                        error:&error] == nil &&
               error != nil,
           "unsupported languages must return an error instead of crashing");
-    puts(
-        "PASS languages: JSON keys/escapes/numbers, JavaScript functions/classes/regex/templates, Unicode chunk boundaries");
+    puts("PASS languages: JSON keys/escapes/numbers/constants, Unicode chunk boundaries");
 }
 
 static uint64_t SCERandomState = 0x329a871;
@@ -161,17 +141,17 @@ static void SCECheckIncremental(SCETreeSitterLanguage language, NSString *initia
     }
     CHECK([[highlighter valueForKey:@"incrementalParseCount"] unsignedIntegerValue] > 80,
           "local edits must reuse the previous syntax tree");
-    printf("PASS incremental %s: 120 edits match a fresh parse, including malformed intermediate syntax\n",
-           language == SCETreeSitterLanguageJSON ? "JSON" : "JavaScript");
+    puts("PASS incremental JSON: 120 edits match a fresh parse, including malformed intermediate syntax");
 }
 
 static void SCECheckViewportAndIdentity(void) {
-    NSMutableString *text = [NSMutableString string];
+    NSMutableString *text = [NSMutableString stringWithString:@"[\n"];
     for (NSUInteger i = 0; i < 20000; i++) {
-        [text appendFormat:@"const value%lu = %lu;\n", (unsigned long)i, (unsigned long)i];
+        [text appendFormat:@"{\"value%lu\": %lu},\n", (unsigned long)i, (unsigned long)i];
     }
+    [text appendString:@"{}]\n"];
     SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:text];
-    SCETreeSitterHighlighter *highlighter = SCECreateHighlighter(SCETreeSitterLanguageJavaScript);
+    SCETreeSitterHighlighter *highlighter = SCECreateHighlighter(SCETreeSitterLanguageJSON);
     NSRange first = [buffer UTF16RangeOfLine:10000 includingLineEnding:YES];
     SCESyntaxHighlightResult *result = SCEHighlight(highlighter, buffer, first, nil);
     CHECK(result.tokens.count > 0 && result.tokens.count < 20,
@@ -185,7 +165,7 @@ static void SCECheckViewportAndIdentity(void) {
     result = SCEHighlight(highlighter, other, NSMakeRange(0, other.lengthUTF16), nil);
     CHECK([SCEKindAt(result, 0) isEqualToString:SCESyntaxTokenComment],
           "equal revisions from a different document must not reuse the old tree");
-    buffer = [[SCETextBuffer alloc] initWithString:@"/* first\n\u4e2d\u6587\U0001f642 middle\nlast */\nconst n = 1;"];
+    buffer = [[SCETextBuffer alloc] initWithString:@"/* first\n\u4e2d\u6587\U0001f642 middle\nlast */\n{\"n\": 1}"];
     NSRange middle = [buffer UTF16RangeOfLine:1 includingLineEnding:YES];
     result = SCEHighlight(highlighter, buffer, middle, nil);
     CHECK([SCEKindAt(result, middle.location) isEqualToString:SCESyntaxTokenComment],
@@ -196,13 +176,13 @@ static void SCECheckViewportAndIdentity(void) {
 }
 
 static void SCECheckCoalescingAndCancellation(void) {
-    SCETreeSitterHighlighter *highlighter = SCECreateHighlighter(SCETreeSitterLanguageJavaScript);
+    SCETreeSitterHighlighter *highlighter = SCECreateHighlighter(SCETreeSitterLanguageJSON);
     dispatch_queue_t queue = [highlighter valueForKey:@"queue"];
     dispatch_semaphore_t parsingSemaphore = dispatch_semaphore_create(0);
     dispatch_async(queue, ^{
         dispatch_semaphore_wait(parsingSemaphore, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
     });
-    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:@"const value = 0;"];
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:@"{\"value\": 0}"];
     __block BOOL obsoleteCalled = NO;
     for (NSUInteger i = 0; i < 100; i++) {
         SCETextBuffer *before = [buffer copy];
@@ -246,7 +226,7 @@ static void SCECheckCoalescingAndCancellation(void) {
                           obsoleteCalled = YES;
                       }];
     [highlighter cancelPendingRequests];
-    SCETextBuffer *fresh = [[SCETextBuffer alloc] initWithString:@"const fresh = 7;"];
+    SCETextBuffer *fresh = [[SCETextBuffer alloc] initWithString:@"true"];
     dispatch_semaphore_signal(parsingSemaphore);
     result = SCEHighlight(highlighter, fresh, NSMakeRange(0, fresh.lengthUTF16), nil);
     CHECK(!obsoleteCalled && [SCEKindAt(result, 0) isEqualToString:SCESyntaxTokenKeyword],
@@ -257,9 +237,6 @@ static void SCECheckCoalescingAndCancellation(void) {
 void SCECheckTreeSitter(void) {
     SCECheckLanguages();
     SCECheckIncremental(SCETreeSitterLanguageJSON, @"{\r\n\"name\": \"\u4e2d\u6587\U0001f642\",\r\n\"n\": 1\r\n}");
-    SCECheckIncremental(
-        SCETreeSitterLanguageJavaScript,
-        @"const title = '\u4e2d\u6587\U0001f642';\nfunction formatLine(text) { return `line ${text}`; }\n");
     SCECheckViewportAndIdentity();
     SCECheckCoalescingAndCancellation();
     printf("All %lu Tree-sitter checks passed.\n", (unsigned long)SCECheckCount);

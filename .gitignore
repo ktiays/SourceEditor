@@ -4,9 +4,3 @@ dist/
 .DS_Store
 *.xcuserstate
 .codex/
-__pycache__/
-
-# Downloaded by script/bootstrap.sh; keep only dependency metadata in Git.
-/Vendor/tree-sitter/
-/Vendor/tree-sitter-json/
-/Vendor/tree-sitter-javascript/

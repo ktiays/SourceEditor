@@ -1,8 +1,7 @@
 #import "include/SCETreeSitterHighlighter.h"
 #import "resource_bundle_accessor.h"
-@import SCETreeSitterRuntime;
-@import SCETreeSitterJSONGrammar;
-@import SCETreeSitterJavaScriptGrammar;
+@import TreeSitter;
+@import TreeSitterJSON;
 
 NSErrorDomain const SCETreeSitterErrorDomain = @"dev.ktiays.SourceEditor.TreeSitter";
 
@@ -135,10 +134,6 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
         case SCETreeSitterLanguageJSON:
             grammar = tree_sitter_json();
             queryName = @"json";
-            break;
-        case SCETreeSitterLanguageJavaScript:
-            grammar = tree_sitter_javascript();
-            queryName = @"javascript";
             break;
         default:
             if (error) {
