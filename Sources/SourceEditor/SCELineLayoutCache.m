@@ -158,6 +158,8 @@
 
 @end
 
+static const NSUInteger SCEMaximumRemappedLinesPerToken = 256;
+
 @implementation SCELineLayoutCache {
     SCETextBuffer *_buffer;
     NSMutableDictionary<NSNumber *, SCELineLayout *> *_layouts;
@@ -268,7 +270,13 @@
     return layout;
 }
 
-- (void)invalidateLinesInRange:(NSRange)oldLineRange lineDelta:(NSInteger)delta {
+- (void)invalidateForReplacementOfUTF16Range:(NSRange)range
+                           replacementLength:(NSUInteger)replacementLength
+                              previousBuffer:(SCETextBuffer *)previousBuffer {
+    NSUInteger firstLine = [previousBuffer lineIndexForUTF16Offset:range.location];
+    NSUInteger lastLine = [previousBuffer lineIndexForUTF16Offset:NSMaxRange(range)];
+    NSRange oldLineRange = NSMakeRange(firstLine, lastLine - firstLine + 1);
+    NSInteger delta = (NSInteger)_buffer.lineCount - (NSInteger)previousBuffer.lineCount;
     NSMutableDictionary *updated = [NSMutableDictionary dictionaryWithCapacity:_layouts.count];
     [_layouts enumerateKeysAndObjectsUsingBlock:^(NSNumber *key, SCELineLayout *layout, BOOL *stop) {
         NSUInteger index = key.unsignedIntegerValue;
@@ -280,15 +288,80 @@
     }];
     _layouts = updated;
     NSMutableDictionary *updatedTokens = [NSMutableDictionary dictionaryWithCapacity:_syntaxTokens.count];
+    NSMutableArray<SCESyntaxToken *> *editedTokens = [NSMutableArray array];
     [_syntaxTokens enumerateKeysAndObjectsUsingBlock:^(NSNumber *key, NSArray<SCESyntaxToken *> *tokens, BOOL *stop) {
         NSUInteger index = key.unsignedIntegerValue;
         if (index < oldLineRange.location) {
             updatedTokens[key] = tokens;
         } else if (index >= NSMaxRange(oldLineRange)) {
             updatedTokens[@((NSUInteger)((NSInteger)index + delta))] = tokens;
+        } else {
+            NSUInteger lineStart = [previousBuffer UTF16RangeOfLine:index includingLineEnding:NO].location;
+            for (SCESyntaxToken *token in tokens) {
+                NSRange absolute = NSMakeRange(lineStart + token.range.location, token.range.length);
+                [editedTokens addObject:[[SCESyntaxToken alloc] initWithRange:absolute kind:token.kind]];
+            }
         }
     }];
     _syntaxTokens = updatedTokens;
+    [self addSyntaxTokens:editedTokens remappedForReplacementOfUTF16Range:range replacementLength:replacementLength];
+}
+
+// Keeps the previous highlight visible on edited lines while the highlighter
+// parses the new revision. Offsets before the edit are unchanged, offsets at or
+// after the end of the replaced range shift by the length change, and offsets
+// inside the replaced range, including its start, move to the end of the
+// replacement. Text typed inside a token or at its trailing edge therefore takes
+// that token's color, while text typed at its leading edge does not. The next
+// accepted highlight result replaces these provisional tokens.
+- (void)addSyntaxTokens:(NSArray<SCESyntaxToken *> *)tokens
+    remappedForReplacementOfUTF16Range:(NSRange)range
+                     replacementLength:(NSUInteger)replacementLength {
+    NSUInteger editStart = range.location;
+    NSUInteger oldEditEnd = NSMaxRange(range);
+    NSUInteger newEditEnd = editStart + replacementLength;
+    NSUInteger (^mapOffset)(NSUInteger) = ^NSUInteger(NSUInteger offset) {
+        if (offset < editStart) {
+            return offset;
+        }
+        return offset >= oldEditEnd ? offset - range.length + replacementLength : newEditEnd;
+    };
+    NSMutableDictionary<NSNumber *, NSMutableArray<SCESyntaxToken *> *> *tokensByLine =
+        [NSMutableDictionary dictionary];
+    for (SCESyntaxToken *token in tokens) {
+        NSUInteger start = mapOffset(token.range.location);
+        NSUInteger end = mapOffset(NSMaxRange(token.range));
+        end = MIN(end, _buffer.lengthUTF16);
+        if (end <= start) {
+            continue;
+        }
+        // Bound the work for a large paste inside a multiline token. The editor
+        // prunes tokens to the viewport immediately afterward, and the highlight
+        // result restores any lines skipped here.
+        NSUInteger firstLine = [_buffer lineIndexForUTF16Offset:start];
+        NSUInteger lineLimit = MIN(_buffer.lineCount, firstLine + SCEMaximumRemappedLinesPerToken);
+        for (NSUInteger line = firstLine; line < lineLimit; line++) {
+            NSRange content = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
+            if (content.location >= end) {
+                break;
+            }
+            NSRange overlap = NSIntersectionRange(content, NSMakeRange(start, end - start));
+            if (!overlap.length) {
+                continue;
+            }
+            NSMutableArray<SCESyntaxToken *> *lineTokens = tokensByLine[@(line)];
+            if (!lineTokens) {
+                lineTokens = [NSMutableArray arrayWithArray:_syntaxTokens[@(line)] ?: @[]];
+                tokensByLine[@(line)] = lineTokens;
+            }
+            NSRange local = NSMakeRange(overlap.location - content.location, overlap.length);
+            [lineTokens addObject:[[SCESyntaxToken alloc] initWithRange:local kind:token.kind]];
+        }
+    }
+    [tokensByLine
+        enumerateKeysAndObjectsUsingBlock:^(NSNumber *key, NSMutableArray<SCESyntaxToken *> *lineTokens, BOOL *stop) {
+            self->_syntaxTokens[key] = [lineTokens copy];
+        }];
 }
 
 - (void)retainLinesInRange:(NSRange)range {

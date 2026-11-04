@@ -455,11 +455,13 @@ static const CGFloat SCEScopeGuideWidth = 1;
                                   editor->_buffer.revision != snapshot.revision) {
                                   return;
                               }
-                              if (result && (result.revision != snapshot.revision ||
-                                             !NSEqualRanges(result.coveredRange, range))) {
+                              // A nil result carries no highlight information, so the
+                              // current colors remain instead of being cleared.
+                              if (!result || result.revision != snapshot.revision ||
+                                  !NSEqualRanges(result.coveredRange, range)) {
                                   return;
                               }
-                              if ([editor->_layoutCache applySyntaxTokens:result.tokens ?: @[] toLineRange:lines]) {
+                              if ([editor->_layoutCache applySyntaxTokens:result.tokens toLineRange:lines]) {
                                   editor->_textSurface.needsDisplay = YES;
                               }
                               [NSNotificationCenter.defaultCenter
@@ -917,19 +919,16 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     if (registerUndo && ![removed isEqualToString:text]) {
         [self registerUndoForRange:NSMakeRange(range.location, text.length) text:removed selection:previousSelection];
     }
-    NSUInteger firstLine = [_buffer lineIndexForUTF16Offset:range.location];
-    NSUInteger lastLine = [_buffer lineIndexForUTF16Offset:NSMaxRange(range)];
-    NSUInteger previousLineCount = _buffer.lineCount;
-    SCETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
+    // Rope snapshots share storage, so capturing the pre-edit buffer is constant time.
+    SCETextBuffer *before = [_buffer copy];
     [_buffer replaceCharactersInUTF16Range:range withString:text];
-    if (before) {
+    if (_syntaxHighlighter) {
         _pendingSyntaxEdit = [[SCETextEdit alloc] initWithRange:range
                                             insertedLengthUTF16:text.length
                                                    beforeBuffer:before
                                                     afterBuffer:_buffer];
     }
-    [_layoutCache invalidateLinesInRange:NSMakeRange(firstLine, lastLine - firstLine + 1)
-                               lineDelta:(NSInteger)_buffer.lineCount - (NSInteger)previousLineCount];
+    [_layoutCache invalidateForReplacementOfUTF16Range:range replacementLength:text.length previousBuffer:before];
     NSRange after = [self clampedRange:selection];
     _anchor = after.location;
     _head = NSMaxRange(after);

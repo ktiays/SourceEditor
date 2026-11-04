@@ -29,7 +29,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (SCELineLayout *)layoutForLineAtIndex:(NSUInteger)lineIndex;
 
-- (void)invalidateLinesInRange:(NSRange)oldLineRange lineDelta:(NSInteger)delta;
+/// Updates the cache after the buffer replaced `range` of `previousBuffer`, a
+/// snapshot taken before the edit, with `replacementLength` UTF-16 units.
+/// Layouts of edited lines are discarded and later lines move with the change in
+/// line count. Syntax tokens of edited lines are remapped into the edited text so
+/// that the previous colors stay visible until a new highlight result arrives.
+- (void)invalidateForReplacementOfUTF16Range:(NSRange)range
+                           replacementLength:(NSUInteger)replacementLength
+                              previousBuffer:(SCETextBuffer *)previousBuffer;
 
 - (void)retainLinesInRange:(NSRange)range;
 

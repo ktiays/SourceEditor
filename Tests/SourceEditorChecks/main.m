@@ -605,8 +605,11 @@ static void SCECheckLayoutAndViewport(void) {
         [[SCELineLayoutCache alloc] initWithBuffer:buffer
                                               font:[NSFont monospacedSystemFontOfSize:14 weight:NSFontWeightRegular]];
     SCELineLayout *keep = [cache layoutForLineAtIndex:1];
+    SCETextBuffer *beforeLineInsertion = [buffer copy];
     [buffer replaceCharactersInUTF16Range:NSMakeRange(1, 0) withString:@"\n"];
-    [cache invalidateLinesInRange:NSMakeRange(0, 1) lineDelta:1];
+    [cache invalidateForReplacementOfUTF16Range:NSMakeRange(1, 0)
+                              replacementLength:1
+                                 previousBuffer:beforeLineInsertion];
     CHECK([cache layoutForLineAtIndex:2] == keep, "unaffected line layout must survive line insertion");
     [cache retainLinesInRange:NSMakeRange(0, 1)];
     CHECK(cache.cachedLineCount == 0, "offscreen cache entries must be evicted");

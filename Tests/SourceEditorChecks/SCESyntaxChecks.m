@@ -135,8 +135,36 @@ NSUInteger SCECheckSyntaxCore(void) {
                      !SCEHasColorAt([cache layoutForLineAtIndex:0], 2, NSColor.redColor),
                  "unconfigured inner token kinds must reset an outer scope to the plain foreground");
 
+    SCESyntaxToken *name = [[SCESyntaxToken alloc] initWithRange:NSMakeRange(18, 4) kind:SCESyntaxTokenVariable];
+    [cache applySyntaxTokens:@[ keyword, name ] toLineRange:NSMakeRange(0, 2)];
+    SCETextBuffer *beforeTyping = [buffer copy];
+    [buffer replaceCharactersInUTF16Range:NSMakeRange(2, 0) withString:@"x"];
+    [cache invalidateForReplacementOfUTF16Range:NSMakeRange(2, 0) replacementLength:1 previousBuffer:beforeTyping];
+    NSDictionary<NSNumber *, NSArray<SCESyntaxToken *> *> *pending = [cache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK(pending[@0].count == 1 && NSEqualRanges(pending[@0][0].range, NSMakeRange(0, 6)),
+                 "text typed inside a token must keep and extend its previous color");
+    SYNTAX_CHECK(pending[@1].count == 1 && NSEqualRanges(pending[@1][0].range, NSMakeRange(0, 4)),
+                 "tokens on lines after the edit must move with their lines");
+    // Deleting the line ending joins both lines; each token keeps its color at its new column.
+    SCETextBuffer *beforeJoin = [buffer copy];
+    [buffer replaceCharactersInUTF16Range:NSMakeRange(18, 1) withString:@""];
+    [cache invalidateForReplacementOfUTF16Range:NSMakeRange(18, 1) replacementLength:0 previousBuffer:beforeJoin];
+    pending = [cache valueForKey:@"syntaxTokens"];
+    NSMutableSet<NSValue *> *joinedRanges = [NSMutableSet set];
+    for (SCESyntaxToken *token in pending[@0]) {
+        [joinedRanges addObject:[NSValue valueWithRange:token.range]];
+    }
+    NSSet<NSValue *> *expectedRanges = [NSSet
+        setWithObjects:[NSValue valueWithRange:NSMakeRange(0, 6)], [NSValue valueWithRange:NSMakeRange(18, 4)], nil];
+    SYNTAX_CHECK(pending[@0].count == 2 && [joinedRanges isEqualToSet:expectedRanges] && pending[@1] == nil,
+                 "joined lines must carry both lines' tokens into the merged line");
+    [cache removeAllSyntaxTokens];
+
     SCEEditorView *editor = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
     editor.string = @"const value = 42;\n";
+    editor.syntaxTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{
+        SCESyntaxTokenKeyword : NSColor.redColor,
+    }];
     SYNTAX_CHECK(editor.syntaxHighlighter == nil, "the editor must default to a standalone plain editor");
     SCEControlledHighlighter *highlighter = [[SCEControlledHighlighter alloc] init];
     editor.syntaxHighlighter = highlighter;
@@ -152,14 +180,26 @@ NSUInteger SCECheckSyntaxCore(void) {
     SCEControlledRequest *latest = highlighter.requests.lastObject;
     SYNTAX_CHECK(latest != first && latest.edit.previousRevision == first.snapshot.revision,
                  "editing must forward exact incremental metadata");
+    styles = [editorCache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK([styles[@0] count] == 1 && NSEqualRanges([styles[@0][0] range], NSMakeRange(3, 5)),
+                 "edited lines must keep previous colors, shifted past text inserted before a token");
+    SYNTAX_CHECK(SCEHasColorAt([editorCache layoutForLineAtIndex:0], 3, NSColor.redColor) &&
+                     !SCEHasColorAt([editorCache layoutForLineAtIndex:0], 0, NSColor.redColor),
+                 "provisional colors must reach the rebuilt layout while the highlight is pending");
     SCEDeliverHighlight(first, @[ keyword ]);
     styles = [editorCache valueForKey:@"syntaxTokens"];
-    SYNTAX_CHECK(styles.count == 0, "a stale result must not recolor newer text");
+    SYNTAX_CHECK(NSEqualRanges([styles[@0][0] range], NSMakeRange(3, 5)), "a stale result must not recolor newer text");
+    latest.completion(nil);
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+    styles = [editorCache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK([styles[@0] count] == 1, "a nil result must keep the current colors");
     SCESyntaxToken *comment = [[SCESyntaxToken alloc] initWithRange:NSMakeRange(0, latest.snapshot.lengthUTF16)
                                                                kind:SCESyntaxTokenComment];
     SCEDeliverHighlight(latest, @[ comment ]);
     styles = [editorCache valueForKey:@"syntaxTokens"];
-    SYNTAX_CHECK([styles[@0] count] == 1, "latest results must replace stale presentation");
+    SYNTAX_CHECK([styles[@0] count] == 1 &&
+                     [((SCESyntaxToken *)styles[@0][0]).kind isEqualToString:SCESyntaxTokenComment],
+                 "latest results must replace provisional presentation");
     NSUInteger requestCount = highlighter.requests.count;
     editor.syntaxTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{
         SCESyntaxTokenComment : NSColor.blueColor,
