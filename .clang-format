@@ -1,0 +1,17 @@
+BasedOnStyle: WebKit
+BreakBeforeBraces: Attach
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 120
+PointerAlignment: Right
+SpaceBeforeCpp11BracedList: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+SeparateDefinitionBlocks: Always
+SortIncludes: false
+ReflowComments: false
+BreakStringLiterals: false
