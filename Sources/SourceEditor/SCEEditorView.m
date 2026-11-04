@@ -1,25 +1,25 @@
-#import "include/SEEditorView.h"
-#import "SELineLayoutCache.h"
-#import "SEViewport.h"
-#import "SESelectionPath.h"
-#import "SEBracketScope.h"
+#import "include/SCEEditorView.h"
+#import "SCELineLayoutCache.h"
+#import "SCEViewport.h"
+#import "SCESelectionPath.h"
+#import "SCEBracketScope.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
-NSNotificationName const SEEditorTextDidChangeNotification = @"SEEditorTextDidChangeNotification";
-NSNotificationName const SEEditorSelectionDidChangeNotification = @"SEEditorSelectionDidChangeNotification";
-NSNotificationName const SEEditorSyntaxHighlightingDidUpdateNotification
-    = @"SEEditorSyntaxHighlightingDidUpdateNotification";
+NSNotificationName const SCEEditorTextDidChangeNotification = @"SCEEditorTextDidChangeNotification";
+NSNotificationName const SCEEditorSelectionDidChangeNotification = @"SCEEditorSelectionDidChangeNotification";
+NSNotificationName const SCEEditorSyntaxHighlightingDidUpdateNotification =
+    @"SCEEditorSyntaxHighlightingDidUpdateNotification";
 
-static const CGFloat SEInset = 12;
-static const CGFloat SELineSpacingMultiplier = 1.2;
-static const CGFloat SECaretWidth = 2.5;
-static const CGFloat SEHighlightHorizontalPadding = 8;
-static const CGFloat SECurrentLineCornerRadius = 6;
-static const CGFloat SELineNumberFontSizeRatio = 0.9;
-static const CGFloat SEScopeGuideWidth = 1;
+static const CGFloat SCEInset = 12;
+static const CGFloat SCELineSpacingMultiplier = 1.2;
+static const CGFloat SCECaretWidth = 2.5;
+static const CGFloat SCEHighlightHorizontalPadding = 8;
+static const CGFloat SCECurrentLineCornerRadius = 6;
+static const CGFloat SCELineNumberFontSizeRatio = 0.9;
+static const CGFloat SCEScopeGuideWidth = 1;
 
-@interface SEEditorView (SurfaceDrawing)
+@interface SCEEditorView (SurfaceDrawing)
 - (void)drawTextSurface:(NSView *)surface;
 
 - (void)drawBackgroundSurface:(NSView *)surface;
@@ -27,12 +27,12 @@ static const CGFloat SEScopeGuideWidth = 1;
 
 // Backing stores are viewport-sized, even when the document is millions of
 // points tall. Text and selection have independent backing layers.
-@interface SEEditorSurface : NSView
-@property (nonatomic, weak) SEEditorView *editor;
+@interface SCEEditorSurface : NSView
+@property (nonatomic, weak) SCEEditorView *editor;
 @property (nonatomic) BOOL drawsText;
 @end
 
-@implementation SEEditorSurface
+@implementation SCEEditorSurface
 
 - (BOOL)isFlipped {
     return YES;
@@ -51,19 +51,20 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    if (self.drawsText)
+    if (self.drawsText) {
         [self.editor drawTextSurface:self];
-    else
+    } else {
         [self.editor drawBackgroundSurface:self];
+    }
 }
 
 @end
 
-@implementation SEEditorView {
-    SETextBuffer *_buffer;
-    SELineLayoutCache *_layoutCache;
-    SEEditorSurface *_backgroundSurface;
-    SEEditorSurface *_textSurface;
+@implementation SCEEditorView {
+    SCETextBuffer *_buffer;
+    SCELineLayoutCache *_layoutCache;
+    SCEEditorSurface *_backgroundSurface;
+    SCEEditorSurface *_textSurface;
     NSTextInsertionIndicator *_caretIndicator;
     NSUndoManager *_editUndoManager;
     NSTextInputContext *_textInputContext;
@@ -90,7 +91,7 @@ static const CGFloat SEScopeGuideWidth = 1;
     NSUInteger _dragGranularity;
     NSRange _dragInitialRange;
     NSEvent *_lastDragEvent;
-    SETextEdit *_pendingSyntaxEdit;
+    SCETextEdit *_pendingSyntaxEdit;
     NSUInteger _syntaxRequestID;
     NSUInteger _requestedSyntaxRevision;
     NSRange _requestedSyntaxRange;
@@ -117,22 +118,24 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
-    if ((self = [super initWithFrame:frame]))
+    if ((self = [super initWithFrame:frame])) {
         [self setUpEditor];
+    }
     return self;
 }
 
 - (instancetype)initWithCoder:(NSCoder *)coder {
-    if ((self = [super initWithCoder:coder]))
+    if ((self = [super initWithCoder:coder])) {
         [self setUpEditor];
+    }
     return self;
 }
 
 - (void)setUpEditor {
-    _buffer = [[SETextBuffer alloc] init];
+    _buffer = [[SCETextBuffer alloc] init];
     _font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
-    _layoutCache = [[SELineLayoutCache alloc] initWithBuffer:_buffer font:_font];
-    _syntaxTheme = SESyntaxTheme.defaultTheme;
+    _layoutCache = [[SCELineLayoutCache alloc] initWithBuffer:_buffer font:_font];
+    _syntaxTheme = SCESyntaxTheme.defaultTheme;
     _editable = YES;
     _showsLineNumbers = YES;
     _showsScopeGuide = YES;
@@ -145,10 +148,10 @@ static const CGFloat SEScopeGuideWidth = 1;
     _editUndoManager = [[NSUndoManager alloc] init];
     _editUndoManager.groupsByEvent = NO;
     _editUndoManager.levelsOfUndo = 1000;
-    _backgroundSurface = [[SEEditorSurface alloc] initWithFrame:self.bounds];
+    _backgroundSurface = [[SCEEditorSurface alloc] initWithFrame:self.bounds];
     _backgroundSurface.editor = self;
     _backgroundSurface.wantsLayer = YES;
-    _textSurface = [[SEEditorSurface alloc] initWithFrame:self.bounds];
+    _textSurface = [[SCEEditorSurface alloc] initWithFrame:self.bounds];
     _textSurface.editor = self;
     _textSurface.drawsText = YES;
     _textSurface.wantsLayer = YES;
@@ -160,7 +163,7 @@ static const CGFloat SEScopeGuideWidth = 1;
     // Dictation effects require an overlay outside the clipped text surface.
     _caretIndicator.automaticModeOptions = 0;
     [_textSurface addSubview:_caretIndicator];
-    __weak SEEditorView *weakSelf = self;
+    __weak SCEEditorView *weakSelf = self;
     _systemColorsObserver = [NSNotificationCenter.defaultCenter addObserverForName:NSSystemColorsDidChangeNotification
                                                                             object:nil
                                                                              queue:NSOperationQueue.mainQueue
@@ -172,15 +175,17 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (void)dealloc {
-    if ([_syntaxHighlighter respondsToSelector:@selector(cancelPendingRequests)])
+    if ([_syntaxHighlighter respondsToSelector:@selector(cancelPendingRequests)]) {
         [_syntaxHighlighter cancelPendingRequests];
+    }
     [_autoscrollTimer invalidate];
     for (id token in @[
              _clipBoundsObserver ?: NSNull.null, _clipFrameObserver ?: NSNull.null, _windowKeyObserver ?: NSNull.null,
              _windowResignObserver ?: NSNull.null, _systemColorsObserver ?: NSNull.null
          ]) {
-        if (token != NSNull.null)
+        if (token != NSNull.null) {
             [NSNotificationCenter.defaultCenter removeObserver:token];
+        }
     }
 }
 
@@ -200,7 +205,7 @@ static const CGFloat SEScopeGuideWidth = 1;
     [self.inputContext activate];
     [self selectionDidChange];
     // AppKit commits the new first responder after this method returns.
-    __weak SEEditorView *weakSelf = self;
+    __weak SCEEditorView *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf updateCaret];
     });
@@ -221,18 +226,20 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (NSTextInputContext *)inputContext {
-    if (!_textInputContext)
+    if (!_textInputContext) {
         _textInputContext = [[NSTextInputContext alloc] initWithClient:self];
+    }
     return _textInputContext;
 }
 
 - (void)updateFontMetrics {
     CGFloat descent = ceil(fabs(_font.descender));
     CGFloat naturalHeight = ceil(_font.ascender + fabs(_font.descender) + _font.leading);
-    _lineHeight = ceil(naturalHeight * SELineSpacingMultiplier);
+    _lineHeight = ceil(naturalHeight * SCELineSpacingMultiplier);
     // Preserve the font's natural baseline and split the added spacing evenly.
     _baseline = naturalHeight - descent + (_lineHeight - naturalHeight) / 2;
-    _lineNumberFont = [NSFont fontWithDescriptor:_font.fontDescriptor size:_font.pointSize * SELineNumberFontSizeRatio];
+    _lineNumberFont = [NSFont fontWithDescriptor:_font.fontDescriptor
+                                            size:_font.pointSize * SCELineNumberFontSizeRatio];
     NSAttributedString *digits = [[NSAttributedString alloc] initWithString:@"0123456789"
                                                                  attributes:@{
                                                                      NSFontAttributeName : _lineNumberFont,
@@ -245,16 +252,17 @@ static const CGFloat SEScopeGuideWidth = 1;
     for (NSUInteger index = 0; index < digits.length; index++) {
         NSAttributedString *digit = [digits attributedSubstringFromRange:NSMakeRange(index, 1)];
         CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)digit);
-        _lineNumberMaximumDigitWidth
-            = MAX(_lineNumberMaximumDigitWidth, CTLineGetTypographicBounds(line, NULL, NULL, NULL));
+        _lineNumberMaximumDigitWidth =
+            MAX(_lineNumberMaximumDigitWidth, CTLineGetTypographicBounds(line, NULL, NULL, NULL));
         CFRelease(line);
     }
     self.enclosingScrollView.verticalLineScroll = _lineHeight;
 }
 
 - (void)updateAppearance {
-    if (!_layoutCache)
+    if (!_layoutCache) {
         return;
+    }
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
@@ -281,17 +289,19 @@ static const CGFloat SEScopeGuideWidth = 1;
 - (void)viewDidMoveToSuperview {
     [super viewDidMoveToSuperview];
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-    if (_clipBoundsObserver)
+    if (_clipBoundsObserver) {
         [center removeObserver:_clipBoundsObserver];
-    if (_clipFrameObserver)
+    }
+    if (_clipFrameObserver) {
         [center removeObserver:_clipFrameObserver];
+    }
     _clipBoundsObserver = nil;
     _clipFrameObserver = nil;
     NSClipView *clip = self.enclosingScrollView.contentView;
     if (clip) {
         clip.postsBoundsChangedNotifications = YES;
         clip.postsFrameChangedNotifications = YES;
-        __weak SEEditorView *weakSelf = self;
+        __weak SCEEditorView *weakSelf = self;
         _clipBoundsObserver = [center addObserverForName:NSViewBoundsDidChangeNotification
                                                   object:clip
                                                    queue:nil
@@ -312,14 +322,16 @@ static const CGFloat SEScopeGuideWidth = 1;
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-    if (_windowKeyObserver)
+    if (_windowKeyObserver) {
         [center removeObserver:_windowKeyObserver];
-    if (_windowResignObserver)
+    }
+    if (_windowResignObserver) {
         [center removeObserver:_windowResignObserver];
+    }
     _windowKeyObserver = nil;
     _windowResignObserver = nil;
     if (self.window) {
-        __weak SEEditorView *weakSelf = self;
+        __weak SCEEditorView *weakSelf = self;
         void (^update)(NSNotification *) = ^(NSNotification *note) {
             [weakSelf selectionDidChange];
         };
@@ -336,43 +348,47 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (CGFloat)gutterWidth {
-    if (!_showsLineNumbers)
+    if (!_showsLineNumbers) {
         return 0;
+    }
     NSUInteger digits = [NSString stringWithFormat:@"%lu", (unsigned long)_buffer.lineCount].length;
     return MAX(44, ceil(digits * _lineNumberMaximumDigitWidth) + 22);
 }
 
 - (CGFloat)textOriginX {
-    return self.gutterWidth + SEInset;
+    return self.gutterWidth + SCEInset;
 }
 
 - (void)updateViewport {
-    if (_updatingViewport || !_buffer)
+    if (_updatingViewport || !_buffer) {
         return;
+    }
     _updatingViewport = YES;
     NSClipView *clip = self.enclosingScrollView.contentView;
     NSRect visible = clip ? clip.bounds : self.bounds;
     if (clip) {
-        NSSize size = NSMakeSize(MAX(NSWidth(visible), self.textOriginX + _maximumMeasuredWidth + SEInset),
-            MAX(NSHeight(visible), SEInset * 2 + _buffer.lineCount * _lineHeight));
-        if (!NSEqualSizes(size, self.frame.size))
+        NSSize size = NSMakeSize(MAX(NSWidth(visible), self.textOriginX + _maximumMeasuredWidth + SCEInset),
+                                 MAX(NSHeight(visible), SCEInset * 2 + _buffer.lineCount * _lineHeight));
+        if (!NSEqualSizes(size, self.frame.size)) {
             [self setFrameSize:size];
+        }
         visible = clip.bounds;
     }
     _viewportRect = visible;
-    NSRange lines = [SEViewport lineRangeForVisibleRect:visible
-                                              lineCount:_buffer.lineCount
-                                             lineHeight:_lineHeight
-                                               topInset:SEInset
-                                               overscan:6];
+    NSRange lines = [SCEViewport lineRangeForVisibleRect:visible
+                                               lineCount:_buffer.lineCount
+                                              lineHeight:_lineHeight
+                                                topInset:SCEInset
+                                                overscan:6];
     [_layoutCache retainLinesInRange:lines];
     for (NSUInteger i = lines.location; i < NSMaxRange(lines); i++) {
         _maximumMeasuredWidth = MAX(_maximumMeasuredWidth, [_layoutCache layoutForLineAtIndex:i].width);
     }
     if (clip) {
-        CGFloat width = MAX(NSWidth(visible), self.textOriginX + _maximumMeasuredWidth + SEInset);
-        if (width != NSWidth(self.frame))
+        CGFloat width = MAX(NSWidth(visible), self.textOriginX + _maximumMeasuredWidth + SCEInset);
+        if (width != NSWidth(self.frame)) {
             [self setFrameSize:NSMakeSize(width, NSHeight(self.frame))];
+        }
         _viewportRect = clip.bounds;
     }
     _backgroundSurface.frame = _viewportRect;
@@ -383,16 +399,18 @@ static const CGFloat SEScopeGuideWidth = 1;
     [_textInputContext invalidateCharacterCoordinates];
     [self.window invalidateCursorRectsForView:self];
     _updatingViewport = NO;
-    SETextEdit *edit = _pendingSyntaxEdit;
+    SCETextEdit *edit = _pendingSyntaxEdit;
     _pendingSyntaxEdit = nil;
     [self requestSyntaxHighlightingForLines:lines edit:edit];
 }
 
-- (void)setSyntaxHighlighter:(id<SESyntaxHighlighter>)syntaxHighlighter {
-    if (_syntaxHighlighter == syntaxHighlighter)
+- (void)setSyntaxHighlighter:(id<SCESyntaxHighlighter>)syntaxHighlighter {
+    if (_syntaxHighlighter == syntaxHighlighter) {
         return;
-    if ([_syntaxHighlighter respondsToSelector:@selector(cancelPendingRequests)])
+    }
+    if ([_syntaxHighlighter respondsToSelector:@selector(cancelPendingRequests)]) {
         [_syntaxHighlighter cancelPendingRequests];
+    }
     _syntaxHighlighter = syntaxHighlighter;
     _syntaxRequestID++;
     _hasSyntaxRequest = NO;
@@ -400,50 +418,55 @@ static const CGFloat SEScopeGuideWidth = 1;
     [self updateViewport];
 }
 
-- (void)setSyntaxTheme:(SESyntaxTheme *)syntaxTheme {
-    _syntaxTheme = [syntaxTheme copy] ?: SESyntaxTheme.defaultTheme;
+- (void)setSyntaxTheme:(SCESyntaxTheme *)syntaxTheme {
+    _syntaxTheme = [syntaxTheme copy] ?: SCESyntaxTheme.defaultTheme;
     _layoutCache.syntaxTheme = _syntaxTheme;
     [self updateViewport];
 }
 
-- (void)requestSyntaxHighlightingForLines:(NSRange)lines edit:(SETextEdit *)edit {
-    id<SESyntaxHighlighter> highlighter = _syntaxHighlighter;
-    if (!highlighter)
+- (void)requestSyntaxHighlightingForLines:(NSRange)lines edit:(SCETextEdit *)edit {
+    id<SCESyntaxHighlighter> highlighter = _syntaxHighlighter;
+    if (!highlighter) {
         return;
+    }
     NSRange range = NSMakeRange(0, 0);
     if (lines.length) {
         NSRange first = [_buffer UTF16RangeOfLine:lines.location includingLineEnding:YES];
         NSRange last = [_buffer UTF16RangeOfLine:NSMaxRange(lines) - 1 includingLineEnding:YES];
         range = NSMakeRange(first.location, NSMaxRange(last) - first.location);
     }
-    if (!edit && _hasSyntaxRequest && _requestedSyntaxRevision == _buffer.revision
-        && NSEqualRanges(range, _requestedSyntaxRange))
+    if (!edit && _hasSyntaxRequest && _requestedSyntaxRevision == _buffer.revision &&
+        NSEqualRanges(range, _requestedSyntaxRange)) {
         return;
+    }
     _hasSyntaxRequest = YES;
     _requestedSyntaxRevision = _buffer.revision;
     _requestedSyntaxRange = range;
     NSUInteger requestID = ++_syntaxRequestID;
-    SETextBuffer *snapshot = [_buffer copy];
-    __weak SEEditorView *weakSelf = self;
-    [highlighter
-        highlightBuffer:snapshot
-             UTF16Range:range
-              afterEdit:edit
-             completion:^(SESyntaxHighlightResult *result) {
-                 dispatch_async(dispatch_get_main_queue(), ^{
-                     SEEditorView *editor = weakSelf;
-                     if (!editor || editor->_syntaxRequestID != requestID
-                         || editor->_buffer.revision != snapshot.revision)
-                         return;
-                     if (result && (result.revision != snapshot.revision || !NSEqualRanges(result.coveredRange, range)))
-                         return;
-                     if ([editor->_layoutCache applySyntaxTokens:result.tokens ?: @[] toLineRange:lines])
-                         editor->_textSurface.needsDisplay = YES;
-                     [NSNotificationCenter.defaultCenter
-                         postNotificationName:SEEditorSyntaxHighlightingDidUpdateNotification
-                                       object:editor];
-                 });
-             }];
+    SCETextBuffer *snapshot = [_buffer copy];
+    __weak SCEEditorView *weakSelf = self;
+    [highlighter highlightBuffer:snapshot
+                      UTF16Range:range
+                       afterEdit:edit
+                      completion:^(SCESyntaxHighlightResult *result) {
+                          dispatch_async(dispatch_get_main_queue(), ^{
+                              SCEEditorView *editor = weakSelf;
+                              if (!editor || editor->_syntaxRequestID != requestID ||
+                                  editor->_buffer.revision != snapshot.revision) {
+                                  return;
+                              }
+                              if (result && (result.revision != snapshot.revision ||
+                                             !NSEqualRanges(result.coveredRange, range))) {
+                                  return;
+                              }
+                              if ([editor->_layoutCache applySyntaxTokens:result.tokens ?: @[] toLineRange:lines]) {
+                                  editor->_textSurface.needsDisplay = YES;
+                              }
+                              [NSNotificationCenter.defaultCenter
+                                  postNotificationName:SCEEditorSyntaxHighlightingDidUpdateNotification
+                                                object:editor];
+                          });
+                      }];
 }
 
 - (void)resetCursorRects {
@@ -455,16 +478,17 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (void)setString:(NSString *)string {
-    SETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
+    SCETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
     _markedRange = NSMakeRange(NSNotFound, 0);
     _compositionOriginalText = nil;
     [_textInputContext discardMarkedText];
     [_buffer replaceCharactersInUTF16Range:NSMakeRange(0, _buffer.lengthUTF16) withString:string ?: @""];
-    if (before)
-        _pendingSyntaxEdit = [[SETextEdit alloc] initWithRange:NSMakeRange(0, before.lengthUTF16)
-                                           insertedLengthUTF16:_buffer.lengthUTF16
-                                                        before:before
-                                                         after:_buffer];
+    if (before) {
+        _pendingSyntaxEdit = [[SCETextEdit alloc] initWithRange:NSMakeRange(0, before.lengthUTF16)
+                                            insertedLengthUTF16:_buffer.lengthUTF16
+                                                   beforeBuffer:before
+                                                    afterBuffer:_buffer];
+    }
     [_editUndoManager removeAllActions];
     [_layoutCache removeAllLayouts];
     [_layoutCache removeAllSyntaxTokens];
@@ -475,10 +499,10 @@ static const CGFloat SEScopeGuideWidth = 1;
     [self updateViewport];
     [self scrollPoint:NSZeroPoint];
     [self selectionDidChange];
-    [NSNotificationCenter.defaultCenter postNotificationName:SEEditorTextDidChangeNotification object:self];
+    [NSNotificationCenter.defaultCenter postNotificationName:SCEEditorTextDidChangeNotification object:self];
 }
 
-- (SETextBuffer *)bufferSnapshot {
+- (SCETextBuffer *)bufferSnapshot {
     return [_buffer copy];
 }
 
@@ -487,8 +511,9 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (void)setFont:(NSFont *)font {
-    if (!font || [_font isEqual:font])
+    if (!font || [_font isEqual:font]) {
         return;
+    }
     _font = [font copy];
     _layoutCache.font = font;
     _scopeGuideX = NAN;
@@ -512,8 +537,9 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (void)setShowsScopeGuide:(BOOL)showsScopeGuide {
-    if (_showsScopeGuide == showsScopeGuide)
+    if (_showsScopeGuide == showsScopeGuide) {
         return;
+    }
     _showsScopeGuide = showsScopeGuide;
     _hasScopeGuideState = NO;
     [self updateScopeGuide];
@@ -526,15 +552,16 @@ static const CGFloat SEScopeGuideWidth = 1;
 }
 
 - (void)updateScopeGuide {
-    if (_hasScopeGuideState && _scopeGuideRevision == _buffer.revision && _scopeGuideHead == _head)
+    if (_hasScopeGuideState && _scopeGuideRevision == _buffer.revision && _scopeGuideHead == _head) {
         return;
+    }
     _hasScopeGuideState = YES;
     _scopeGuideRevision = _buffer.revision;
     _scopeGuideHead = _head;
     _scopeGuideX = NAN;
     _scopeGuideBrackets = _showsScopeGuide
-        ? SEEnclosingMultilineBracketRange(_buffer, _head, SEBracketScopeDefaultScanLimit)
-        : NSMakeRange(NSNotFound, 0);
+                              ? SCEEnclosingMultilineBracketRange(_buffer, _head, SCEBracketScopeDefaultScanLimit)
+                              : NSMakeRange(NSNotFound, 0);
     if (_scopeGuideBrackets.location != NSNotFound) {
         _scopeGuideOpenLine = [_buffer lineIndexForUTF16Offset:_scopeGuideBrackets.location];
         _scopeGuideCloseLine = [_buffer lineIndexForUTF16Offset:NSMaxRange(_scopeGuideBrackets) - 1];
@@ -547,41 +574,47 @@ static const CGFloat SEScopeGuideWidth = 1;
         NSRange content = [_buffer UTF16RangeOfLine:_scopeGuideOpenLine includingLineEnding:NO];
         NSString *text = [_buffer substringWithUTF16Range:content];
         NSUInteger indent = 0;
-        while (
-            indent < text.length && ([text characterAtIndex:indent] == ' ' || [text characterAtIndex:indent] == '\t'))
+        while (indent < text.length &&
+               ([text characterAtIndex:indent] == ' ' || [text characterAtIndex:indent] == '\t')) {
             indent++;
+        }
         _scopeGuideX = [[_layoutCache layoutForLineAtIndex:_scopeGuideOpenLine] xForUTF16Index:indent];
     }
     return _scopeGuideX;
 }
 
 - (void)drawScopeGuideInSurface:(NSView *)surface {
-    if (!_showsScopeGuide)
+    if (!_showsScopeGuide) {
         return;
+    }
     [self updateScopeGuide];
-    if (_scopeGuideBrackets.location == NSNotFound)
+    if (_scopeGuideBrackets.location == NSNotFound) {
         return;
+    }
     CGFloat scale = self.window.backingScaleFactor ?: 2;
-    CGFloat top = SEInset + (_scopeGuideOpenLine + 1) * _lineHeight - NSMinY(_viewportRect);
-    CGFloat bottom = SEInset + _scopeGuideCloseLine * _lineHeight - NSMinY(_viewportRect);
-    if (bottom <= 0 || top >= NSHeight(surface.bounds))
+    CGFloat top = SCEInset + (_scopeGuideOpenLine + 1) * _lineHeight - NSMinY(_viewportRect);
+    CGFloat bottom = SCEInset + _scopeGuideCloseLine * _lineHeight - NSMinY(_viewportRect);
+    if (bottom <= 0 || top >= NSHeight(surface.bounds)) {
         return;
+    }
     CGFloat x = round((self.textOriginX + self.scopeGuideX - NSMinX(_viewportRect)) * scale) / scale;
-    CGFloat width = MAX(1 / scale, round(SEScopeGuideWidth * scale) / scale);
+    CGFloat width = MAX(1 / scale, round(SCEScopeGuideWidth * scale) / scale);
     NSRect guide = NSMakeRect(x, MAX(top, -1), width, MIN(bottom, NSHeight(surface.bounds) + 1) - MAX(top, -1));
     // The pinned gutter covers the guide when scrolled horizontally.
-    guide = NSIntersectionRect(guide,
-        NSMakeRect(
-            self.gutterWidth, -1, MAX(0, NSWidth(surface.bounds) - self.gutterWidth), NSHeight(surface.bounds) + 2));
-    if (NSIsEmptyRect(guide))
+    guide =
+        NSIntersectionRect(guide, NSMakeRect(self.gutterWidth, -1, MAX(0, NSWidth(surface.bounds) - self.gutterWidth),
+                                             NSHeight(surface.bounds) + 2));
+    if (NSIsEmptyRect(guide)) {
         return;
+    }
     [NSColor.tertiaryLabelColor setFill];
     NSRectFillUsingOperation(guide, NSCompositingOperationSourceOver);
 }
 
 - (void)setEditable:(BOOL)editable {
-    if (!editable)
+    if (!editable) {
         [self unmarkText];
+    }
     _editable = editable;
     [self updateCaret];
 }
@@ -592,17 +625,20 @@ static const CGFloat SEScopeGuideWidth = 1;
 
 - (NSUInteger)normalizeOffset:(NSUInteger)offset forward:(BOOL)forward {
     offset = MIN(offset, _buffer.lengthUTF16);
-    if (offset == _buffer.lengthUTF16)
+    if (offset == _buffer.lengthUTF16) {
         return offset;
+    }
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
     NSRange lineRange = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
     NSString *text = [_buffer substringWithUTF16Range:lineRange];
     NSUInteger local = offset - lineRange.location;
-    if (local && [text characterAtIndex:local] == '\n' && [text characterAtIndex:local - 1] == '\r')
+    if (local && [text characterAtIndex:local] == '\n' && [text characterAtIndex:local - 1] == '\r') {
         return forward ? offset + 1 : offset - 1;
+    }
     NSRange cluster = [text rangeOfComposedCharacterSequenceAtIndex:local];
-    if (cluster.location == local)
+    if (cluster.location == local) {
         return offset;
+    }
     return lineRange.location + (forward ? NSMaxRange(cluster) : cluster.location);
 }
 
@@ -619,11 +655,13 @@ static const CGFloat SEScopeGuideWidth = 1;
 - (void)setAnchor:(NSUInteger)anchor head:(NSUInteger)head scroll:(BOOL)scroll preserveX:(BOOL)preserveX {
     _anchor = MIN(anchor, _buffer.lengthUTF16);
     _head = MIN(head, _buffer.lengthUTF16);
-    if (!preserveX)
+    if (!preserveX) {
         _preferredX = NAN;
+    }
     [self selectionDidChange];
-    if (scroll)
+    if (scroll) {
         [self scrollSelectionToVisible];
+    }
 }
 
 - (void)selectionDidChange {
@@ -631,27 +669,28 @@ static const CGFloat SEScopeGuideWidth = 1;
     _backgroundSurface.needsDisplay = YES;
     [self updateCaret];
     [_textInputContext invalidateCharacterCoordinates];
-    [NSNotificationCenter.defaultCenter postNotificationName:SEEditorSelectionDidChangeNotification object:self];
+    [NSNotificationCenter.defaultCenter postNotificationName:SCEEditorSelectionDidChangeNotification object:self];
     NSAccessibilityPostNotification(self, NSAccessibilitySelectedTextChangedNotification);
 }
 
 - (NSRect)caretRectForUTF16Offset:(NSUInteger)offset {
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
-    SELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
+    SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
     _maximumMeasuredWidth = MAX(_maximumMeasuredWidth, layout.width);
     CGFloat x = self.textOriginX + [layout xForUTF16Index:MIN(offset - range.location, range.length)];
-    return NSMakeRect(x, SEInset + line * _lineHeight, 1, _lineHeight);
+    return NSMakeRect(x, SCEInset + line * _lineHeight, 1, _lineHeight);
 }
 
 - (void)updateCaret {
-    if (!_buffer)
+    if (!_buffer) {
         return;
+    }
     NSUInteger line = [_buffer lineIndexForUTF16Offset:_head];
-    CGFloat y = SEInset + line * _lineHeight;
+    CGFloat y = SCEInset + line * _lineHeight;
     BOOL visible = y + _lineHeight > NSMinY(_viewportRect) && y < NSMaxY(_viewportRect);
-    BOOL active = _editable && visible && !self.selectedRange.length && self.window.isKeyWindow
-        && self.window.firstResponder == self;
+    BOOL active = _editable && visible && !self.selectedRange.length && self.window.isKeyWindow &&
+                  self.window.firstResponder == self;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     if (visible) {
@@ -659,31 +698,35 @@ static const CGFloat SEScopeGuideWidth = 1;
         rect.origin.x -= NSMinX(_viewportRect);
         rect.origin.y -= NSMinY(_viewportRect);
         CGFloat scale = self.window.backingScaleFactor ?: 2;
-        rect.size.width = round(SECaretWidth * scale) / scale;
+        rect.size.width = round(SCECaretWidth * scale) / scale;
         rect.origin.x = round((rect.origin.x - rect.size.width / 2) * scale) / scale;
         rect.origin.y = round((rect.origin.y + 1) * scale) / scale;
         rect.size.height = round((rect.size.height - 2) * scale) / scale;
-        if (!NSEqualRects(_caretIndicator.frame, rect))
+        if (!NSEqualRects(_caretIndicator.frame, rect)) {
             _caretIndicator.frame = rect;
-        if (rect.origin.x < self.gutterWidth || NSMinX(rect) >= NSWidth(_textSurface.bounds))
+        }
+        if (rect.origin.x < self.gutterWidth || NSMinX(rect) >= NSWidth(_textSurface.bounds)) {
             active = NO;
+        }
     }
     [CATransaction commit];
     [self setCaretVisible:active];
 }
 
 - (void)setCaretVisible:(BOOL)visible {
-    NSTextInsertionIndicatorDisplayMode mode
-        = visible ? NSTextInsertionIndicatorDisplayModeAutomatic : NSTextInsertionIndicatorDisplayModeHidden;
-    if (_caretIndicator.displayMode != mode)
+    NSTextInsertionIndicatorDisplayMode mode =
+        visible ? NSTextInsertionIndicatorDisplayModeAutomatic : NSTextInsertionIndicatorDisplayModeHidden;
+    if (_caretIndicator.displayMode != mode) {
         _caretIndicator.displayMode = mode;
+    }
 }
 
 - (void)scrollSelectionToVisible {
     NSRect rect = [self caretRectForUTF16Offset:_head];
-    CGFloat width = self.textOriginX + _maximumMeasuredWidth + SEInset;
-    if (self.enclosingScrollView && width > NSWidth(self.frame))
+    CGFloat width = self.textOriginX + _maximumMeasuredWidth + SCEInset;
+    if (self.enclosingScrollView && width > NSWidth(self.frame)) {
         [self setFrameSize:NSMakeSize(width, NSHeight(self.frame))];
+    }
     if (_head == 0) {
         [self scrollPoint:NSZeroPoint];
         [self updateCaret];
@@ -697,7 +740,7 @@ static const CGFloat SEScopeGuideWidth = 1;
     [self updateCaret];
 }
 
-static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloat baseline) {
+static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloat baseline) {
     CGContextSaveGState(context);
     CGContextTranslateCTM(context, x, baseline);
     CGContextScaleCTM(context, 1, -1);
@@ -710,20 +753,20 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 - (void)drawTextSurface:(NSView *)surface {
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
     CGFloat scale = self.window.backingScaleFactor ?: 2;
-    NSRange visible = [SEViewport lineRangeForVisibleRect:_viewportRect
-                                                lineCount:_buffer.lineCount
-                                               lineHeight:_lineHeight
-                                                 topInset:SEInset
-                                                 overscan:0];
+    NSRange visible = [SCEViewport lineRangeForVisibleRect:_viewportRect
+                                                 lineCount:_buffer.lineCount
+                                                lineHeight:_lineHeight
+                                                  topInset:SCEInset
+                                                  overscan:0];
     CGFloat originX = self.textOriginX - NSMinX(_viewportRect);
     CGContextSaveGState(context);
-    CGContextClipToRect(context,
-        NSMakeRect(self.gutterWidth, 0, MAX(0, NSWidth(surface.bounds) - self.gutterWidth), NSHeight(surface.bounds)));
+    CGContextClipToRect(context, NSMakeRect(self.gutterWidth, 0, MAX(0, NSWidth(surface.bounds) - self.gutterWidth),
+                                            NSHeight(surface.bounds)));
     for (NSUInteger i = visible.location; i < NSMaxRange(visible); i++) {
-        SELineLayout *layout = [_layoutCache layoutForLineAtIndex:i];
-        CGFloat y = SEInset + i * _lineHeight - NSMinY(_viewportRect);
+        SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:i];
+        CGFloat y = SCEInset + i * _lineHeight - NSMinY(_viewportRect);
         CGFloat baseline = round((y + _baseline) * scale) / scale;
-        SEDrawCTLine(context, layout.line, originX, baseline);
+        SCEDrawCTLine(context, layout.line, originX, baseline);
         if ([self hasMarkedText]) {
             NSRange lineRange = [_buffer UTF16RangeOfLine:i includingLineEnding:NO];
             NSRange overlap = NSIntersectionRange(lineRange, _markedRange);
@@ -749,9 +792,9 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
                                                 attributes:attrs];
             CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)number);
             CGFloat width = (CGFloat)CTLineGetTypographicBounds(line, NULL, NULL, NULL);
-            CGFloat y = SEInset + i * _lineHeight - NSMinY(_viewportRect);
+            CGFloat y = SCEInset + i * _lineHeight - NSMinY(_viewportRect);
             CGFloat baseline = round((y + _lineNumberBaseline) * scale) / scale;
-            SEDrawCTLine(context, line, round((self.gutterWidth - width - 10) * scale) / scale, baseline);
+            SCEDrawCTLine(context, line, round((self.gutterWidth - width - 10) * scale) / scale, baseline);
             CFRelease(line);
         }
     }
@@ -769,19 +812,19 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
     NSRange selection = self.selectedRange;
     if (!selection.length) {
         NSUInteger line = [_buffer lineIndexForUTF16Offset:_head];
-        NSRect rect = NSMakeRect(SEHighlightHorizontalPadding, SEInset + line * _lineHeight - NSMinY(_viewportRect),
-            MAX(0, NSWidth(surface.bounds) - 2 * SEHighlightHorizontalPadding), _lineHeight);
+        NSRect rect = NSMakeRect(SCEHighlightHorizontalPadding, SCEInset + line * _lineHeight - NSMinY(_viewportRect),
+                                 MAX(0, NSWidth(surface.bounds) - 2 * SCEHighlightHorizontalPadding), _lineHeight);
         // One opaque fill keeps the highlight uniform across the gutter and text.
         [[NSColor.textBackgroundColor blendedColorWithFraction:0.035 ofColor:NSColor.labelColor] setFill];
-        CGPathRef path = SECreateSelectionPath(@[ [NSValue valueWithRect:rect] ], SECurrentLineCornerRadius);
+        CGPathRef path = SCECreateSelectionPath(@[ [NSValue valueWithRect:rect] ], SCECurrentLineCornerRadius);
         CGContextSetShouldAntialias(context, YES);
         CGContextAddPath(context, path);
         CGContextFillPath(context);
         CGPathRelease(path);
     } else {
-        CGFloat rightEdge = MAX(self.gutterWidth, NSWidth(surface.bounds) - SEHighlightHorizontalPadding);
-        NSRect selectionBounds
-            = NSMakeRect(self.gutterWidth, 0, rightEdge - self.gutterWidth, NSHeight(surface.bounds));
+        CGFloat rightEdge = MAX(self.gutterWidth, NSWidth(surface.bounds) - SCEHighlightHorizontalPadding);
+        NSRect selectionBounds =
+            NSMakeRect(self.gutterWidth, 0, rightEdge - self.gutterWidth, NSHeight(surface.bounds));
         CGContextClipToRect(context, selectionBounds);
         BOOL active = self.window.isKeyWindow && self.window.firstResponder == self;
         [(active ? NSColor.selectedTextBackgroundColor : NSColor.unemphasizedSelectedTextBackgroundColor) setFill];
@@ -790,20 +833,21 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
         NSRect geometryBounds = NSInsetRect(selectionBounds, -cornerRadius * 3, -_lineHeight * 2);
         // Round at the inset right edge while retaining overscan elsewhere.
         geometryBounds.size.width = rightEdge - NSMinX(geometryBounds);
-        NSRange visible = [SEViewport lineRangeForVisibleRect:_viewportRect
-                                                    lineCount:_buffer.lineCount
-                                                   lineHeight:_lineHeight
-                                                     topInset:SEInset
-                                                     overscan:1];
+        NSRange visible = [SCEViewport lineRangeForVisibleRect:_viewportRect
+                                                     lineCount:_buffer.lineCount
+                                                    lineHeight:_lineHeight
+                                                      topInset:SCEInset
+                                                      overscan:1];
         for (NSUInteger i = visible.location; i < NSMaxRange(visible); i++) {
             NSRange wholeLine = [_buffer UTF16RangeOfLine:i includingLineEnding:YES];
             NSRange overlap = NSIntersectionRange(wholeLine, selection);
-            if (!overlap.length)
+            if (!overlap.length) {
                 continue;
+            }
             NSRange content = [_buffer UTF16RangeOfLine:i includingLineEnding:NO];
             NSRange textOverlap = NSIntersectionRange(content, selection);
-            SELineLayout *layout = [_layoutCache layoutForLineAtIndex:i];
-            CGFloat y = SEInset + i * _lineHeight - NSMinY(_viewportRect);
+            SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:i];
+            CGFloat y = SCEInset + i * _lineHeight - NSMinY(_viewportRect);
             CGFloat x = self.textOriginX - NSMinX(_viewportRect);
             if (textOverlap.length) {
                 NSRange local = NSMakeRange(textOverlap.location - content.location, textOverlap.length);
@@ -812,21 +856,23 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
                     rect.origin.x += x;
                     rect.origin.y += y;
                     rect = NSIntersectionRect(rect, geometryBounds);
-                    if (!NSIsEmptyRect(rect))
+                    if (!NSIsEmptyRect(rect)) {
                         [selectionRects addObject:[NSValue valueWithRect:rect]];
+                    }
                 }
             }
             if (NSMaxRange(overlap) > NSMaxRange(content)) {
                 CGFloat endX = x + [layout xForUTF16Index:content.length];
-                NSRect rect
-                    = NSIntersectionRect(NSMakeRect(endX, y, MAX(0, rightEdge - endX), _lineHeight), geometryBounds);
-                if (!NSIsEmptyRect(rect))
+                NSRect rect =
+                    NSIntersectionRect(NSMakeRect(endX, y, MAX(0, rightEdge - endX), _lineHeight), geometryBounds);
+                if (!NSIsEmptyRect(rect)) {
                     [selectionRects addObject:[NSValue valueWithRect:rect]];
+                }
             }
         }
         // Trace the union first, then smooth all exposed turns, including
         // concave row junctions. One antialiased fill has no internal seams.
-        CGPathRef selectionPath = SECreateSelectionPath(selectionRects, cornerRadius);
+        CGPathRef selectionPath = SCECreateSelectionPath(selectionRects, cornerRadius);
         CGContextSetShouldAntialias(context, YES);
         CGContextAddPath(context, selectionPath);
         CGContextFillPath(context);
@@ -845,18 +891,20 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 
 - (void)registerUndoForRange:(NSRange)range text:(NSString *)text selection:(NSRange)selection {
     BOOL openGroup = _editUndoManager.groupingLevel == 0;
-    if (openGroup)
+    if (openGroup) {
         [_editUndoManager beginUndoGrouping];
+    }
     [_editUndoManager registerUndoWithTarget:self
-                                     handler:^(SEEditorView *target) {
+                                     handler:^(SCEEditorView *target) {
                                          [target replaceRange:range
                                                    withString:text
                                                selectionAfter:selection
                                                  registerUndo:YES];
                                      }];
     [_editUndoManager setActionName:NSLocalizedString(@"Typing", nil)];
-    if (openGroup)
+    if (openGroup) {
         [_editUndoManager endUndoGrouping];
+    }
 }
 
 - (void)replaceRange:(NSRange)range
@@ -872,13 +920,14 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
     NSUInteger firstLine = [_buffer lineIndexForUTF16Offset:range.location];
     NSUInteger lastLine = [_buffer lineIndexForUTF16Offset:NSMaxRange(range)];
     NSUInteger previousLineCount = _buffer.lineCount;
-    SETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
+    SCETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
     [_buffer replaceCharactersInUTF16Range:range withString:text];
-    if (before)
-        _pendingSyntaxEdit = [[SETextEdit alloc] initWithRange:range
-                                           insertedLengthUTF16:text.length
-                                                        before:before
-                                                         after:_buffer];
+    if (before) {
+        _pendingSyntaxEdit = [[SCETextEdit alloc] initWithRange:range
+                                            insertedLengthUTF16:text.length
+                                                   beforeBuffer:before
+                                                    afterBuffer:_buffer];
+    }
     [_layoutCache invalidateLinesInRange:NSMakeRange(firstLine, lastLine - firstLine + 1)
                                lineDelta:(NSInteger)_buffer.lineCount - (NSInteger)previousLineCount];
     NSRange after = [self clampedRange:selection];
@@ -888,7 +937,7 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
     [self updateViewport];
     [self selectionDidChange];
     [self scrollSelectionToVisible];
-    [NSNotificationCenter.defaultCenter postNotificationName:SEEditorTextDidChangeNotification object:self];
+    [NSNotificationCenter.defaultCenter postNotificationName:SCEEditorTextDidChangeNotification object:self];
     NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
 }
 
@@ -898,13 +947,15 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 }
 
 - (void)insertText:(id)value replacementRange:(NSRange)replacementRange {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     NSString *text = [value isKindOfClass:NSAttributedString.class] ? [value string] : value;
-    if (![text isKindOfClass:NSString.class])
+    if (![text isKindOfClass:NSString.class]) {
         return;
-    if ([self hasMarkedText]
-        && (replacementRange.location == NSNotFound || NSEqualRanges(replacementRange, _markedRange))) {
+    }
+    if ([self hasMarkedText] &&
+        (replacementRange.location == NSNotFound || NSEqualRanges(replacementRange, _markedRange))) {
         NSRange marked = _markedRange;
         [self replaceRange:marked
                 withString:text
@@ -914,8 +965,8 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
         [self unmarkText];
     } else {
         [self unmarkText];
-        NSRange range
-            = replacementRange.location == NSNotFound ? self.selectedRange : [self clampedRange:replacementRange];
+        NSRange range =
+            replacementRange.location == NSNotFound ? self.selectedRange : [self clampedRange:replacementRange];
         [self replaceRange:range
                 withString:text
             selectionAfter:NSMakeRange(range.location + text.length, 0)
@@ -928,17 +979,20 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 }
 
 - (void)setMarkedText:(id)value selectedRange:(NSRange)selection replacementRange:(NSRange)replacementRange {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     NSString *text = [value isKindOfClass:NSAttributedString.class] ? [value string] : value;
-    if (![text isKindOfClass:NSString.class])
+    if (![text isKindOfClass:NSString.class]) {
         return;
-    if ([self hasMarkedText] && replacementRange.location != NSNotFound
-        && !NSEqualRanges(replacementRange, _markedRange))
+    }
+    if ([self hasMarkedText] && replacementRange.location != NSNotFound &&
+        !NSEqualRanges(replacementRange, _markedRange)) {
         [self unmarkText];
+    }
     NSRange range = replacementRange.location != NSNotFound
-        ? [self clampedRange:replacementRange]
-        : ([self hasMarkedText] ? _markedRange : self.selectedRange);
+                        ? [self clampedRange:replacementRange]
+                        : ([self hasMarkedText] ? _markedRange : self.selectedRange);
     if (![self hasMarkedText]) {
         _compositionOriginalText = [_buffer substringWithUTF16Range:range];
         _compositionOriginalSelection = self.selectedRange;
@@ -961,8 +1015,9 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 }
 
 - (void)unmarkText {
-    if (![self hasMarkedText])
+    if (![self hasMarkedText]) {
         return;
+    }
     NSRange finalRange = _markedRange;
     NSString *original = _compositionOriginalText ?: @"";
     NSRange originalSelection = _compositionOriginalSelection;
@@ -981,14 +1036,16 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 
 - (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
     if (range.location == NSNotFound || range.location > _buffer.lengthUTF16) {
-        if (actualRange)
+        if (actualRange) {
             *actualRange = NSMakeRange(NSNotFound, 0);
+        }
         return nil;
     }
     range = [self clampedRange:range];
     range.length = MIN(range.length, 16384);
-    if (actualRange)
+    if (actualRange) {
         *actualRange = range;
+    }
     return [[NSAttributedString alloc] initWithString:[_buffer substringWithUTF16Range:range]
                                            attributes:@{
                                                NSFontAttributeName : _font,
@@ -1001,28 +1058,31 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
     NSRange content = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
     NSUInteger start = MIN(range.location, NSMaxRange(content));
     NSUInteger end = MIN(NSMaxRange(range), NSMaxRange(content));
-    if (actualRange)
+    if (actualRange) {
         *actualRange = NSMakeRange(start, end - start);
-    SELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
+    }
+    SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
     CGFloat x1 = [layout xForUTF16Index:start - content.location];
     CGFloat x2 = [layout xForUTF16Index:end - content.location];
-    NSRect rect
-        = NSMakeRect(self.textOriginX + MIN(x1, x2), SEInset + line * _lineHeight, MAX(1, fabs(x2 - x1)), _lineHeight);
+    NSRect rect =
+        NSMakeRect(self.textOriginX + MIN(x1, x2), SCEInset + line * _lineHeight, MAX(1, fabs(x2 - x1)), _lineHeight);
     return self.window ? [self.window convertRectToScreen:[self convertRect:rect toView:nil]] : NSZeroRect;
 }
 
 - (NSUInteger)UTF16OffsetForDocumentPoint:(NSPoint)point {
-    if (point.y >= SEInset + _buffer.lineCount * _lineHeight)
+    if (point.y >= SCEInset + _buffer.lineCount * _lineHeight) {
         return _buffer.lengthUTF16;
-    CGFloat row = floor(MAX(0, point.y - SEInset) / _lineHeight);
+    }
+    CGFloat row = floor(MAX(0, point.y - SCEInset) / _lineHeight);
     NSUInteger line = (NSUInteger)MIN(row, (CGFloat)(_buffer.lineCount - 1));
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
     return range.location + [[_layoutCache layoutForLineAtIndex:line] UTF16IndexForX:point.x - self.textOriginX];
 }
 
 - (NSUInteger)characterIndexForPoint:(NSPoint)point {
-    if (!self.window)
+    if (!self.window) {
         return NSNotFound;
+    }
     NSPoint windowPoint = [self.window convertPointFromScreen:point];
     return [self UTF16OffsetForDocumentPoint:[self convertPoint:windowPoint fromView:nil]];
 }
@@ -1043,27 +1103,31 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
     if ([self respondsToSelector:selector]) {
         void (*invoke)(id, SEL, id) = (void (*)(id, SEL, id))[self methodForSelector:selector];
         invoke(self, selector, nil);
-    } else
+    } else {
         [super doCommandBySelector:selector];
+    }
 }
 
 // MARK: Standard editing commands
 
 - (void)undo:(id)sender {
     [self finishComposition];
-    if (_editable)
+    if (_editable) {
         [_editUndoManager undo];
+    }
 }
 
 - (void)redo:(id)sender {
     [self finishComposition];
-    if (_editable)
+    if (_editable) {
         [_editUndoManager redo];
+    }
 }
 
 - (void)copy:(id)sender {
-    if (!self.selectedRange.length)
+    if (!self.selectedRange.length) {
         return;
+    }
     NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
     [pasteboard clearContents];
     [pasteboard setString:[_buffer substringWithUTF16Range:self.selectedRange] forType:NSPasteboardTypeString];
@@ -1078,8 +1142,9 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 
 - (void)paste:(id)sender {
     NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
-    if (_editable && text)
+    if (_editable && text) {
         [self insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
+    }
 }
 
 - (void)selectAll:(id)sender {
@@ -1088,37 +1153,43 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 }
 
 - (NSUInteger)previousBoundary:(NSUInteger)offset {
-    if (!offset)
+    if (!offset) {
         return 0;
+    }
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset - 1];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
     NSString *text = [_buffer substringWithUTF16Range:range];
     NSUInteger local = offset - range.location;
-    if (local >= 2 && [text characterAtIndex:local - 1] == '\n' && [text characterAtIndex:local - 2] == '\r')
+    if (local >= 2 && [text characterAtIndex:local - 1] == '\n' && [text characterAtIndex:local - 2] == '\r') {
         return offset - 2;
+    }
     return range.location + [text rangeOfComposedCharacterSequenceAtIndex:local - 1].location;
 }
 
 - (NSUInteger)nextBoundary:(NSUInteger)offset {
-    if (offset >= _buffer.lengthUTF16)
+    if (offset >= _buffer.lengthUTF16) {
         return _buffer.lengthUTF16;
+    }
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
     NSString *text = [_buffer substringWithUTF16Range:range];
     NSUInteger local = offset - range.location;
-    if (local + 1 < text.length && [text characterAtIndex:local] == '\r' && [text characterAtIndex:local + 1] == '\n')
+    if (local + 1 < text.length && [text characterAtIndex:local] == '\r' && [text characterAtIndex:local + 1] == '\n') {
         return offset + 2;
+    }
     return range.location + NSMaxRange([text rangeOfComposedCharacterSequenceAtIndex:local]);
 }
 
 - (void)deleteRange:(NSRange)range {
-    if (_editable && range.length)
+    if (_editable && range.length) {
         [self replaceRange:range withString:@"" selectionAfter:NSMakeRange(range.location, 0) registerUndo:YES];
+    }
 }
 
 - (void)deleteBackward:(id)sender {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     [self finishComposition];
     NSRange range = self.selectedRange;
     if (!range.length) {
@@ -1129,18 +1200,21 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 }
 
 - (void)deleteForward:(id)sender {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     [self finishComposition];
     NSRange range = self.selectedRange;
-    if (!range.length)
+    if (!range.length) {
         range = NSMakeRange(_head, [self nextBoundary:_head] - _head);
+    }
     [self deleteRange:range];
 }
 
 - (void)insertNewline:(id)sender {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     [self finishComposition];
     NSUInteger line = [_buffer lineIndexForUTF16Offset:self.selectedRange.location];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
@@ -1148,14 +1222,17 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
     NSUInteger maxIndent = MIN(self.selectedRange.location - range.location, text.length);
     NSUInteger indent = 0;
     if (_automaticIndentationEnabled) {
-        while (indent < maxIndent && ([text characterAtIndex:indent] == ' ' || [text characterAtIndex:indent] == '\t'))
+        while (indent < maxIndent && ([text characterAtIndex:indent] == ' ' || [text
+                                                                                   characterAtIndex:indent] == '\t')) {
             indent++;
+        }
     }
     NSString *ending = [text hasSuffix:@"\r\n"] ? @"\r\n" : @"\n";
     if (![text hasSuffix:@"\n"] && _buffer.lineCount > 1) {
         NSString *first = [_buffer substringWithUTF16Range:[_buffer UTF16RangeOfLine:0 includingLineEnding:YES]];
-        if ([first hasSuffix:@"\r\n"])
+        if ([first hasSuffix:@"\r\n"]) {
             ending = @"\r\n";
+        }
     }
     [self insertText:[ending stringByAppendingString:[text substringToIndex:indent]]
         replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -1166,8 +1243,9 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 }
 
 - (void)cancelOperation:(id)sender {
-    if (![self hasMarkedText])
+    if (![self hasMarkedText]) {
         return;
+    }
     NSRange range = _markedRange;
     NSString *original = _compositionOriginalText ?: @"";
     NSRange selection = _compositionOriginalSelection;
@@ -1187,8 +1265,8 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 - (void)moveHorizontal:(BOOL)forward extending:(BOOL)extending {
     NSRange selection = self.selectedRange;
     NSUInteger offset = !extending && selection.length
-        ? (forward ? NSMaxRange(selection) : selection.location)
-        : (forward ? [self nextBoundary:_head] : [self previousBoundary:_head]);
+                            ? (forward ? NSMaxRange(selection) : selection.location)
+                            : (forward ? [self nextBoundary:_head] : [self previousBoundary:_head]);
     [self moveToOffset:offset extending:extending preserveX:NO];
 }
 
@@ -1227,15 +1305,17 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
 - (void)moveVertical:(NSInteger)delta extending:(BOOL)extending {
     NSUInteger line = [_buffer lineIndexForUTF16Offset:_head];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
-    if (isnan(_preferredX))
+    if (isnan(_preferredX)) {
         _preferredX =
             [[_layoutCache layoutForLineAtIndex:line] xForUTF16Index:MIN(_head - range.location, range.length)];
+    }
     NSInteger target = MAX(0, MIN((NSInteger)_buffer.lineCount - 1, (NSInteger)line + delta));
     NSRange targetRange = [_buffer UTF16RangeOfLine:(NSUInteger)target includingLineEnding:NO];
-    NSUInteger offset
-        = targetRange.location + [[_layoutCache layoutForLineAtIndex:(NSUInteger)target] UTF16IndexForX:_preferredX];
-    if (target == (NSInteger)line)
+    NSUInteger offset =
+        targetRange.location + [[_layoutCache layoutForLineAtIndex:(NSUInteger)target] UTF16IndexForX:_preferredX];
+    if (target == (NSInteger)line) {
         offset = delta < 0 ? 0 : _buffer.lengthUTF16;
+    }
     [self moveToOffset:offset extending:extending preserveX:YES];
 }
 
@@ -1324,35 +1404,40 @@ static void SEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloa
     [self moveToOffset:_buffer.lengthUTF16 extending:YES preserveX:NO];
 }
 
-static NSInteger SECharacterClass(NSString *text, NSUInteger index) {
+static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
     unichar ch = [text characterAtIndex:index];
-    if ([NSCharacterSet.whitespaceAndNewlineCharacterSet characterIsMember:ch])
+    if ([NSCharacterSet.whitespaceAndNewlineCharacterSet characterIsMember:ch]) {
         return 0;
-    if (ch == '_' || [NSCharacterSet.alphanumericCharacterSet characterIsMember:ch])
+    }
+    if (ch == '_' || [NSCharacterSet.alphanumericCharacterSet characterIsMember:ch]) {
         return 1;
+    }
     return 2;
 }
 
 - (NSRange)wordRangeAtOffset:(NSUInteger)offset {
-    if (!_buffer.lengthUTF16)
+    if (!_buffer.lengthUTF16) {
         return NSMakeRange(0, 0);
+    }
     offset = MIN(offset, _buffer.lengthUTF16 - 1);
     NSRange range = [_buffer UTF16RangeOfLine:[_buffer lineIndexForUTF16Offset:offset] includingLineEnding:YES];
     NSString *text = [_buffer substringWithUTF16Range:range];
     NSRange cluster = [text rangeOfComposedCharacterSequenceAtIndex:offset - range.location];
-    NSInteger kind = SECharacterClass(text, cluster.location);
+    NSInteger kind = SCECharacterClass(text, cluster.location);
     NSUInteger start = cluster.location;
     NSUInteger end = NSMaxRange(cluster);
     while (start) {
         NSRange previous = [text rangeOfComposedCharacterSequenceAtIndex:start - 1];
-        if (SECharacterClass(text, previous.location) != kind)
+        if (SCECharacterClass(text, previous.location) != kind) {
             break;
+        }
         start = previous.location;
     }
     while (end < text.length) {
         NSRange next = [text rangeOfComposedCharacterSequenceAtIndex:end];
-        if (SECharacterClass(text, next.location) != kind)
+        if (SCECharacterClass(text, next.location) != kind) {
             break;
+        }
         end = NSMaxRange(next);
     }
     return NSMakeRange(range.location + start, end - start);
@@ -1361,18 +1446,23 @@ static NSInteger SECharacterClass(NSString *text, NSUInteger index) {
 - (NSUInteger)wordBoundary:(BOOL)forward {
     NSUInteger offset = _head;
     if (forward) {
-        if (offset == _buffer.lengthUTF16)
+        if (offset == _buffer.lengthUTF16) {
             return offset;
+        }
         NSRange word = [self wordRangeAtOffset:offset];
-        if (SECharacterClass([_buffer substringWithUTF16Range:word], 0) == 0 && NSMaxRange(word) < _buffer.lengthUTF16)
+        if (SCECharacterClass([_buffer substringWithUTF16Range:word], 0) == 0 &&
+            NSMaxRange(word) < _buffer.lengthUTF16) {
             word = [self wordRangeAtOffset:NSMaxRange(word)];
+        }
         return NSMaxRange(word);
     }
-    if (!offset)
+    if (!offset) {
         return 0;
+    }
     NSRange word = [self wordRangeAtOffset:[self previousBoundary:offset]];
-    if (SECharacterClass([_buffer substringWithUTF16Range:word], 0) == 0 && word.location)
+    if (SCECharacterClass([_buffer substringWithUTF16Range:word], 0) == 0 && word.location) {
         word = [self wordRangeAtOffset:[self previousBoundary:word.location]];
+    }
     return word.location;
 }
 
@@ -1409,36 +1499,40 @@ static NSInteger SECharacterClass(NSString *text, NSUInteger index) {
 }
 
 - (void)deleteWordBackward:(id)sender {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     [self finishComposition];
-    if (self.selectedRange.length)
+    if (self.selectedRange.length) {
         [self deleteRange:self.selectedRange];
-    else {
+    } else {
         NSUInteger start = [self wordBoundary:NO];
         [self deleteRange:NSMakeRange(start, _head - start)];
     }
 }
 
 - (void)deleteWordForward:(id)sender {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     [self finishComposition];
     [self deleteRange:self.selectedRange.length ? self.selectedRange
                                                 : NSMakeRange(_head, [self wordBoundary:YES] - _head)];
 }
 
 - (void)deleteToBeginningOfLine:(id)sender {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     [self finishComposition];
     NSUInteger start = [self lineBoundary:NO];
     [self deleteRange:self.selectedRange.length ? self.selectedRange : NSMakeRange(start, _head - start)];
 }
 
 - (void)deleteToEndOfLine:(id)sender {
-    if (!_editable)
+    if (!_editable) {
         return;
+    }
     [self finishComposition];
     [self deleteRange:self.selectedRange.length ? self.selectedRange
                                                 : NSMakeRange(_head, [self lineBoundary:YES] - _head)];
@@ -1452,35 +1546,38 @@ static NSInteger SECharacterClass(NSString *text, NSUInteger index) {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     NSUInteger offset = [self UTF16OffsetForDocumentPoint:point];
     _dragGranularity = event.clickCount >= 3 || point.x < NSMinX(_viewportRect) + self.gutterWidth
-        ? 2
-        : (event.clickCount == 2 ? 1 : 0);
+                           ? 2
+                           : (event.clickCount == 2 ? 1 : 0);
     NSRange range = NSMakeRange(offset, 0);
-    if (_dragGranularity == 1)
+    if (_dragGranularity == 1) {
         range = [self wordRangeAtOffset:offset];
-    else if (_dragGranularity == 2)
+    } else if (_dragGranularity == 2) {
         range = [_buffer UTF16RangeOfLine:[_buffer lineIndexForUTF16Offset:offset] includingLineEnding:YES];
+    }
     _dragInitialRange = range;
     if ((event.modifierFlags & NSEventModifierFlagShift) && !_dragGranularity) {
         [self setAnchor:_anchor head:offset scroll:NO preserveX:NO];
         _dragInitialRange = NSMakeRange(_anchor, 0);
-    } else
+    } else {
         [self setAnchor:range.location head:NSMaxRange(range) scroll:NO preserveX:NO];
+    }
 }
 
 - (void)updateDragWithEvent:(NSEvent *)event {
     [self autoscroll:event];
     NSUInteger offset = [self UTF16OffsetForDocumentPoint:[self convertPoint:event.locationInWindow fromView:nil]];
     if (_dragGranularity) {
-        NSRange range = _dragGranularity == 1
-            ? [self wordRangeAtOffset:offset]
-            : [_buffer UTF16RangeOfLine:[_buffer lineIndexForUTF16Offset:offset] includingLineEnding:YES];
+        NSRange range = _dragGranularity == 1 ? [self wordRangeAtOffset:offset]
+                                              : [_buffer UTF16RangeOfLine:[_buffer lineIndexForUTF16Offset:offset]
+                                                      includingLineEnding:YES];
         BOOL before = range.location < _dragInitialRange.location;
         [self setAnchor:before ? NSMaxRange(_dragInitialRange) : _dragInitialRange.location
                    head:before ? range.location : NSMaxRange(range)
                  scroll:NO
               preserveX:NO];
-    } else
+    } else {
         [self setAnchor:_dragInitialRange.location head:offset scroll:NO preserveX:NO];
+    }
 }
 
 - (void)mouseDragged:(NSEvent *)event {
@@ -1489,13 +1586,14 @@ static NSInteger SECharacterClass(NSString *text, NSUInteger index) {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     BOOL outside = !NSPointInRect(point, self.visibleRect);
     if (outside && !_autoscrollTimer) {
-        __weak SEEditorView *weakSelf = self;
+        __weak SCEEditorView *weakSelf = self;
         _autoscrollTimer = [NSTimer timerWithTimeInterval:1.0 / 30
                                                   repeats:YES
                                                     block:^(NSTimer *timer) {
-                                                        SEEditorView *editor = weakSelf;
-                                                        if (editor && editor->_lastDragEvent)
+                                                        SCEEditorView *editor = weakSelf;
+                                                        if (editor && editor->_lastDragEvent) {
                                                             [editor updateDragWithEvent:editor->_lastDragEvent];
+                                                        }
                                                     }];
         [NSRunLoop.mainRunLoop addTimer:_autoscrollTimer forMode:NSRunLoopCommonModes];
     } else if (!outside) {
@@ -1512,17 +1610,22 @@ static NSInteger SECharacterClass(NSString *text, NSUInteger index) {
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
     SEL action = item.action;
-    if (action == @selector(undo:))
+    if (action == @selector(undo:)) {
         return _editable && _editUndoManager.canUndo;
-    if (action == @selector(redo:))
+    }
+    if (action == @selector(redo:)) {
         return _editable && _editUndoManager.canRedo;
-    if (action == @selector(copy:))
+    }
+    if (action == @selector(copy:)) {
         return self.selectedRange.length > 0;
-    if (action == @selector(cut:))
+    }
+    if (action == @selector(cut:)) {
         return _editable && self.selectedRange.length > 0;
-    if (action == @selector(paste:))
+    }
+    if (action == @selector(paste:)) {
         return _editable &&
-            [NSPasteboard.generalPasteboard canReadItemWithDataConformingToTypes:@[ NSPasteboardTypeString ]];
+               [NSPasteboard.generalPasteboard canReadItemWithDataConformingToTypes:@[ NSPasteboardTypeString ]];
+    }
     return YES;
 }
 

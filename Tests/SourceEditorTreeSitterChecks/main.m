@@ -1,25 +1,25 @@
 #import <Foundation/Foundation.h>
 @import SourceEditorTreeSitter;
 
-void SECheckTreeSitter(void);
+void SCECheckTreeSitter(void);
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSError *error = nil;
-        SETreeSitterHighlighter *json = [[SETreeSitterHighlighter alloc] initWithLanguage:SETreeSitterLanguageJSON
-                                                                                    error:&error];
+        SCETreeSitterHighlighter *json = [[SCETreeSitterHighlighter alloc] initWithLanguage:SCETreeSitterLanguageJSON
+                                                                                      error:&error];
         if (!json) {
             NSLog(@"%@", error);
             return 1;
         }
-        SETreeSitterHighlighter *javascript =
-            [[SETreeSitterHighlighter alloc] initWithLanguage:SETreeSitterLanguageJavaScript error:&error];
+        SCETreeSitterHighlighter *javascript =
+            [[SCETreeSitterHighlighter alloc] initWithLanguage:SCETreeSitterLanguageJavaScript error:&error];
         if (!javascript) {
             NSLog(@"%@", error);
             return 1;
         }
         puts("Tree-sitter grammars and queries loaded.");
-        SECheckTreeSitter();
+        SCECheckTreeSitter();
     }
     return 0;
 }

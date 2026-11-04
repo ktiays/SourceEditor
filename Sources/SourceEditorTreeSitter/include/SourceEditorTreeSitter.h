@@ -1,1 +1,1 @@
-#import "SETreeSitterHighlighter.h"
+#import "SCETreeSitterHighlighter.h"

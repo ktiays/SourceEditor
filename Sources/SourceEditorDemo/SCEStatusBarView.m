@@ -1,13 +1,13 @@
-#import "SEStatusBarView.h"
+#import "SCEStatusBarView.h"
 
-const CGFloat SEStatusBarHeight = 32;
+const CGFloat SCEStatusBarHeight = 32;
 
-SEStatusBarItem const SEStatusBarItemLine = @"line";
-SEStatusBarItem const SEStatusBarItemColumn = @"column";
-SEStatusBarItem const SEStatusBarItemLineCount = @"lineCount";
-SEStatusBarItem const SEStatusBarItemLanguage = @"language";
+SCEStatusBarItem const SCEStatusBarItemLine = @"line";
+SCEStatusBarItem const SCEStatusBarItemColumn = @"column";
+SCEStatusBarItem const SCEStatusBarItemLineCount = @"lineCount";
+SCEStatusBarItem const SCEStatusBarItemLanguage = @"language";
 
-@interface SEStatusBarView ()
+@interface SCEStatusBarView ()
 
 @property (nonatomic, strong) NSStackView *stack;
 @property (nonatomic, strong) NSTextField *lineLabel;
@@ -18,7 +18,7 @@ SEStatusBarItem const SEStatusBarItemLanguage = @"language";
 
 @end
 
-@implementation SEStatusBarView
+@implementation SCEStatusBarView
 
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
@@ -62,7 +62,7 @@ SEStatusBarItem const SEStatusBarItemLanguage = @"language";
         [self.stack.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
     ]];
 
-    _items = @[ SEStatusBarItemLine, SEStatusBarItemColumn, SEStatusBarItemLineCount, SEStatusBarItemLanguage ];
+    _items = @[ SCEStatusBarItemLine, SCEStatusBarItemColumn, SCEStatusBarItemLineCount, SCEStatusBarItemLanguage ];
     _languageTitles = @[];
     [self rebuildItems];
     [self setLine:1 column:1 lineCount:1];
@@ -91,7 +91,7 @@ SEStatusBarItem const SEStatusBarItemLanguage = @"language";
     return separator;
 }
 
-- (void)setItems:(NSArray<SEStatusBarItem> *)items {
+- (void)setItems:(NSArray<SCEStatusBarItem> *)items {
     _items = [items copy];
     [self rebuildItems];
 }
@@ -133,17 +133,17 @@ SEStatusBarItem const SEStatusBarItemLanguage = @"language";
     }
 }
 
-- (nullable NSView *)viewForItem:(SEStatusBarItem)item {
-    if ([item isEqualToString:SEStatusBarItemLine]) {
+- (nullable NSView *)viewForItem:(SCEStatusBarItem)item {
+    if ([item isEqualToString:SCEStatusBarItemLine]) {
         return self.lineLabel;
     }
-    if ([item isEqualToString:SEStatusBarItemColumn]) {
+    if ([item isEqualToString:SCEStatusBarItemColumn]) {
         return self.columnLabel;
     }
-    if ([item isEqualToString:SEStatusBarItemLineCount]) {
+    if ([item isEqualToString:SCEStatusBarItemLineCount]) {
         return self.lineCountLabel;
     }
-    if ([item isEqualToString:SEStatusBarItemLanguage]) {
+    if ([item isEqualToString:SCEStatusBarItemLanguage]) {
         if (self.languageTitles.count == 0) {
             return nil;
         }
@@ -160,12 +160,12 @@ SEStatusBarItem const SEStatusBarItemLanguage = @"language";
 
     NSMutableArray<NSView *> *leading = [NSMutableArray array];
     NSView *language = nil;
-    for (SEStatusBarItem item in self.items) {
+    for (SCEStatusBarItem item in self.items) {
         NSView *view = [self viewForItem:item];
         if (!view || [leading containsObject:view] || view == language) {
             continue;
         }
-        if ([item isEqualToString:SEStatusBarItemLanguage]) {
+        if ([item isEqualToString:SCEStatusBarItemLanguage]) {
             language = view;
         } else {
             [leading addObject:view];

@@ -1,9 +1,17 @@
-BasedOnStyle: WebKit
+# Formatting complements the Apple coding conventions documented in AGENTS.md.
+BasedOnStyle: LLVM
 BreakBeforeBraces: Attach
 IndentWidth: 4
 ContinuationIndentWidth: 4
+ObjCBlockIndentWidth: 4
+IndentCaseLabels: true
+UseTab: Never
 ColumnLimit: 120
 PointerAlignment: Right
+DerivePointerAlignment: false
+InsertBraces: true
+ObjCSpaceAfterProperty: true
+ObjCSpaceBeforeProtocolList: true
 SpaceBeforeCpp11BracedList: false
 AllowShortFunctionsOnASingleLine: None
 AllowShortBlocksOnASingleLine: Never

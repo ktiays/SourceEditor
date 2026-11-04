@@ -1,56 +1,57 @@
-#import "SEBracketScope.h"
+#import "SCEBracketScope.h"
 
-const NSUInteger SEBracketScopeDefaultScanLimit = 1 << 17;
+const NSUInteger SCEBracketScopeDefaultScanLimit = 1 << 17;
 
 enum {
-    SEBracketKindCount = 3,
-    SEBracketChunkLength = 4096,
+    SCEBracketKindCount = 3,
+    SCEBracketChunkLength = 4096,
 };
 
-static NSInteger SEOpeningBracketKind(unichar character) {
+static NSInteger SCEOpeningBracketKind(unichar character) {
     switch (character) {
-    case '(':
-        return 0;
-    case '[':
-        return 1;
-    case '{':
-        return 2;
-    default:
-        return -1;
+        case '(':
+            return 0;
+        case '[':
+            return 1;
+        case '{':
+            return 2;
+        default:
+            return -1;
     }
 }
 
-static NSInteger SEClosingBracketKind(unichar character) {
+static NSInteger SCEClosingBracketKind(unichar character) {
     switch (character) {
-    case ')':
-        return 0;
-    case ']':
-        return 1;
-    case '}':
-        return 2;
-    default:
-        return -1;
+        case ')':
+            return 0;
+        case ']':
+            return 1;
+        case '}':
+            return 2;
+        default:
+            return -1;
     }
 }
 
 // Reads the rope one bounded chunk at a time, in either direction, without
 // materializing an NSString.
 typedef struct {
-    __unsafe_unretained SETextBuffer *buffer;
+    __unsafe_unretained SCETextBuffer *buffer;
     NSUInteger position;
     NSUInteger limit;
     NSUInteger chunkStart;
     NSUInteger chunkLength;
-    unichar chunk[SEBracketChunkLength];
-} SEBracketReader;
+    unichar chunk[SCEBracketChunkLength];
+} SCEBracketReader;
 
-static BOOL SEReadBackward(SEBracketReader *reader, unichar *character, NSUInteger *offset) {
-    if (reader->position <= reader->limit)
+static BOOL SCEReadBackward(SCEBracketReader *reader, unichar *character, NSUInteger *offset) {
+    if (reader->position <= reader->limit) {
         return NO;
+    }
     NSUInteger index = reader->position - 1;
     if (index < reader->chunkStart || index >= reader->chunkStart + reader->chunkLength) {
-        NSUInteger start
-            = MAX(reader->limit, reader->position > SEBracketChunkLength ? reader->position - SEBracketChunkLength : 0);
+        NSUInteger start =
+            MAX(reader->limit, reader->position > SCEBracketChunkLength ? reader->position - SCEBracketChunkLength : 0);
         reader->chunkStart = start;
         reader->chunkLength = reader->position - start;
         [reader->buffer getUTF16Characters:reader->chunk range:NSMakeRange(start, reader->chunkLength)];
@@ -61,13 +62,14 @@ static BOOL SEReadBackward(SEBracketReader *reader, unichar *character, NSUInteg
     return YES;
 }
 
-static BOOL SEReadForward(SEBracketReader *reader, unichar *character, NSUInteger *offset) {
-    if (reader->position >= reader->limit)
+static BOOL SCEReadForward(SCEBracketReader *reader, unichar *character, NSUInteger *offset) {
+    if (reader->position >= reader->limit) {
         return NO;
+    }
     NSUInteger index = reader->position;
     if (index < reader->chunkStart || index >= reader->chunkStart + reader->chunkLength) {
         reader->chunkStart = index;
-        reader->chunkLength = MIN(SEBracketChunkLength, reader->limit - index);
+        reader->chunkLength = MIN(SCEBracketChunkLength, reader->limit - index);
         [reader->buffer getUTF16Characters:reader->chunk range:NSMakeRange(index, reader->chunkLength)];
     }
     reader->position = index + 1;
@@ -76,12 +78,12 @@ static BOOL SEReadForward(SEBracketReader *reader, unichar *character, NSUIntege
     return YES;
 }
 
-NSRange SEEnclosingMultilineBracketRange(SETextBuffer *buffer, NSUInteger offset, NSUInteger scanLimit) {
+NSRange SCEEnclosingMultilineBracketRange(SCETextBuffer *buffer, NSUInteger offset, NSUInteger scanLimit) {
     NSRange notFound = NSMakeRange(NSNotFound, 0);
     NSUInteger length = buffer.lengthUTF16;
     offset = MIN(offset, length);
-    SEBracketReader *backward = calloc(1, sizeof(SEBracketReader));
-    SEBracketReader *forward = calloc(1, sizeof(SEBracketReader));
+    SCEBracketReader *backward = calloc(1, sizeof(SCEBracketReader));
+    SCEBracketReader *forward = calloc(1, sizeof(SCEBracketReader));
     if (!backward || !forward) {
         free(backward);
         free(forward);
@@ -96,47 +98,51 @@ NSRange SEEnclosingMultilineBracketRange(SETextBuffer *buffer, NSUInteger offset
 
     // With each kind balanced on its own, the n-th unmatched opener of a kind
     // before the caret pairs with the n-th unmatched closer of that kind after it.
-    NSUInteger backwardDepth[SEBracketKindCount] = { 0 };
-    NSUInteger openersFound[SEBracketKindCount] = { 0 };
-    NSUInteger forwardDepth[SEBracketKindCount] = { 0 };
-    NSMutableArray<NSNumber *> *closers[SEBracketKindCount]
-        = { [NSMutableArray array], [NSMutableArray array], [NSMutableArray array] };
+    NSUInteger backwardDepth[SCEBracketKindCount] = {0};
+    NSUInteger openersFound[SCEBracketKindCount] = {0};
+    NSUInteger forwardDepth[SCEBracketKindCount] = {0};
+    NSMutableArray<NSNumber *> *closers[SCEBracketKindCount] = {
+        [NSMutableArray array], [NSMutableArray array], [NSMutableArray array]};
     NSRange result = notFound;
     unichar character;
     NSUInteger position;
-    while (SEReadBackward(backward, &character, &position)) {
-        NSInteger kind = SEClosingBracketKind(character);
+    while (SCEReadBackward(backward, &character, &position)) {
+        NSInteger kind = SCEClosingBracketKind(character);
         if (kind >= 0) {
             backwardDepth[kind]++;
             continue;
         }
-        kind = SEOpeningBracketKind(character);
-        if (kind < 0)
+        kind = SCEOpeningBracketKind(character);
+        if (kind < 0) {
             continue;
+        }
         if (backwardDepth[kind]) {
             backwardDepth[kind]--;
             continue;
         }
         NSUInteger open = position;
         NSUInteger ordinal = openersFound[kind]++;
-        while (closers[kind].count <= ordinal && SEReadForward(forward, &character, &position)) {
-            NSInteger openKind = SEOpeningBracketKind(character);
+        while (closers[kind].count <= ordinal && SCEReadForward(forward, &character, &position)) {
+            NSInteger openKind = SCEOpeningBracketKind(character);
             if (openKind >= 0) {
                 forwardDepth[openKind]++;
                 continue;
             }
-            NSInteger closeKind = SEClosingBracketKind(character);
-            if (closeKind < 0)
+            NSInteger closeKind = SCEClosingBracketKind(character);
+            if (closeKind < 0) {
                 continue;
-            if (forwardDepth[closeKind])
+            }
+            if (forwardDepth[closeKind]) {
                 forwardDepth[closeKind]--;
-            else
+            } else {
                 [closers[closeKind] addObject:@(position)];
+            }
         }
-        // Unclosed within the budget, e.g. while it's still being typed. An
-        // outer scope of another kind may still be complete.
-        if (closers[kind].count <= ordinal)
+        // The closing bracket may be absent during editing or beyond the scan
+        // limit. An enclosing scope of another kind may still be complete.
+        if (closers[kind].count <= ordinal) {
             continue;
+        }
         NSUInteger close = closers[kind][ordinal].unsignedIntegerValue;
         NSUInteger openLine = [buffer lineIndexForUTF16Offset:open];
         NSUInteger closeLine = [buffer lineIndexForUTF16Offset:close];

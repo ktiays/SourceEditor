@@ -5,9 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// A persistent, balanced rope of bounded UTF-16 chunks. Not thread-safe for
 /// mutation. A copy shares immutable nodes and can be read on another queue.
 /// All offsets and NSRanges in this API count UTF-16 code units, never bytes.
-/// Lines are zero-based. LF and CRLF are preserved; a final newline adds an
-/// empty last line. Standalone CR line endings aren't indexed in this version.
-@interface SETextBuffer : NSObject <NSCopying>
+/// Line indices start at zero. LF and CRLF are preserved; a final newline adds
+/// an empty last line. Standalone CR line endings are not indexed.
+@interface SCETextBuffer : NSObject <NSCopying>
 
 - (instancetype)initWithString:(NSString *)string NS_DESIGNATED_INITIALIZER;
 
@@ -24,7 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (NSString *)substringWithUTF16Range:(NSRange)range;
 
-/// Copies directly from Rope leaves without materializing an NSString.
+/// Copies directly from rope leaves without materializing an NSString.
 - (void)getUTF16Characters:(unichar *_Nullable)characters range:(NSRange)range;
 
 - (NSUInteger)lineIndexForUTF16Offset:(NSUInteger)offset;

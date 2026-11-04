@@ -1,4 +1,4 @@
-#import "SETextBuffer.h"
-#import "SEEditorView.h"
-#import "SESyntaxHighlighting.h"
-#import "SESyntaxTheme.h"
+#import "SCETextBuffer.h"
+#import "SCEEditorView.h"
+#import "SCESyntaxHighlighting.h"
+#import "SCESyntaxTheme.h"

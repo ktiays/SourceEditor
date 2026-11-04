@@ -1,35 +1,35 @@
 @import SourceEditor;
-#import "../../Sources/SourceEditor/SEViewport.h"
-#import "../../Sources/SourceEditor/SELineLayoutCache.h"
-#import "../../Sources/SourceEditor/SESelectionPath.h"
-#import "../../Sources/SourceEditor/SEBracketScope.h"
+#import "../../Sources/SourceEditor/SCEViewport.h"
+#import "../../Sources/SourceEditor/SCELineLayoutCache.h"
+#import "../../Sources/SourceEditor/SCESelectionPath.h"
+#import "../../Sources/SourceEditor/SCEBracketScope.h"
 #import <time.h>
-#import "SESyntaxChecks.h"
+#import "SCESyntaxChecks.h"
 
-@interface SEEditorView (SelectionRenderingChecks)
+@interface SCEEditorView (SelectionRenderingChecks)
 - (void)drawBackgroundSurface:(NSView *)surface;
 @end
 
-static NSUInteger SECheckCount;
+static NSUInteger SCECheckCount;
 #define CHECK(condition, message)                                                                                      \
     do {                                                                                                               \
-        SECheckCount++;                                                                                                \
+        SCECheckCount++;                                                                                               \
         if (!(condition)) {                                                                                            \
             fprintf(stderr, "FAIL at line %d: %s\n", __LINE__, (message));                                             \
             exit(1);                                                                                                   \
         }                                                                                                              \
     } while (0)
 
-static uint64_t SERandomState = 0x684931ba;
+static uint64_t SCERandomState = 0x684931ba;
 
-static NSUInteger SERandom(NSUInteger upper) {
-    SERandomState ^= SERandomState << 13;
-    SERandomState ^= SERandomState >> 7;
-    SERandomState ^= SERandomState << 17;
-    return upper ? (NSUInteger)(SERandomState % upper) : 0;
+static NSUInteger SCERandom(NSUInteger upper) {
+    SCERandomState ^= SCERandomState << 13;
+    SCERandomState ^= SCERandomState >> 7;
+    SCERandomState ^= SCERandomState << 17;
+    return upper ? (NSUInteger)(SCERandomState % upper) : 0;
 }
 
-static NSArray<NSValue *> *SEReferenceLines(NSString *text) {
+static NSArray<NSValue *> *SCEReferenceLines(NSString *text) {
     NSMutableArray *ranges = [NSMutableArray array];
     NSUInteger start = 0;
     for (NSUInteger i = 0; i < text.length; i++) {
@@ -42,10 +42,10 @@ static NSArray<NSValue *> *SEReferenceLines(NSString *text) {
     return ranges;
 }
 
-static void SECheckBuffer(SETextBuffer *buffer, NSString *reference) {
+static void SCECheckBuffer(SCETextBuffer *buffer, NSString *reference) {
     CHECK([buffer.string isEqualToString:reference], "rope text differs from NSString");
     CHECK(buffer.lengthUTF16 == reference.length, "UTF-16 length differs");
-    NSArray<NSValue *> *lines = SEReferenceLines(reference);
+    NSArray<NSValue *> *lines = SCEReferenceLines(reference);
     CHECK(buffer.lineCount == lines.count, "line count differs");
     for (NSUInteger i = 0; i < lines.count; i++) {
         NSRange expected = lines[i].rangeValue;
@@ -53,59 +53,66 @@ static void SECheckBuffer(SETextBuffer *buffer, NSString *reference) {
         NSRange content = expected;
         if (content.length && [reference characterAtIndex:NSMaxRange(content) - 1] == '\n') {
             content.length--;
-            if (content.length && [reference characterAtIndex:NSMaxRange(content) - 1] == '\r')
+            if (content.length && [reference characterAtIndex:NSMaxRange(content) - 1] == '\r') {
                 content.length--;
+            }
         }
         CHECK(NSEqualRanges([buffer UTF16RangeOfLine:i includingLineEnding:NO], content), "content range differs");
     }
     for (NSUInteger i = 0; i < 20; i++) {
-        NSUInteger offset = SERandom(reference.length + 1);
+        NSUInteger offset = SCERandom(reference.length + 1);
         NSUInteger line = 0;
-        for (NSUInteger j = 0; j < offset; j++)
-            if ([reference characterAtIndex:j] == '\n')
+        for (NSUInteger j = 0; j < offset; j++) {
+            if ([reference characterAtIndex:j] == '\n') {
                 line++;
+            }
+        }
         CHECK([buffer lineIndexForUTF16Offset:offset] == line, "offset-to-line mapping differs");
-        NSUInteger end = offset + SERandom(reference.length - offset + 1);
+        NSUInteger end = offset + SCERandom(reference.length - offset + 1);
         NSRange range = NSMakeRange(offset, end - offset);
         CHECK([[buffer substringWithUTF16Range:range] isEqualToString:[reference substringWithRange:range]],
-            "range read differs");
+              "range read differs");
     }
 }
 
-static void SECheckRope(void) {
+static void SCECheckRope(void) {
+    // CJK characters, combining marks, and joined emoji retain their original UTF-16 lengths.
     NSMutableString *reference = [NSMutableString string];
-    for (NSUInteger i = 0; i < 1200; i++)
-        [reference appendString:@"line\t中文👨‍👩‍👧‍👦\r\n"];
-    SETextBuffer *buffer = [[SETextBuffer alloc] initWithString:reference];
-    SECheckBuffer(buffer, reference);
-    NSArray *insertions =
-        @[ @"", @"a", @"\n", @"\r\n", @"中文", @"e\u0301", @"👨‍👩‍👧‍👦", @"one\ntwo\n", @"\t" ];
+    for (NSUInteger i = 0; i < 1200; i++) {
+        [reference appendString:@"line\t\u4e2d\u6587\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466\r\n"];
+    }
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:reference];
+    SCECheckBuffer(buffer, reference);
+    NSArray *insertions = @[
+        @"", @"a", @"\n", @"\r\n", @"\u4e2d\u6587", @"e\u0301",
+        @"\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466", @"one\ntwo\n", @"\t"
+    ];
     for (NSUInteger i = 0; i < 12000; i++) {
         @autoreleasepool {
-            NSUInteger start = SERandom(reference.length + 1);
-            NSUInteger count = SERandom(MIN(80, reference.length - start) + 1);
-            NSString *text = insertions[SERandom(insertions.count)];
+            NSUInteger start = SCERandom(reference.length + 1);
+            NSUInteger count = SCERandom(MIN(80, reference.length - start) + 1);
+            NSString *text = insertions[SCERandom(insertions.count)];
             NSRange range = NSMakeRange(start, count);
-            SETextBuffer *snapshot = [buffer copy];
+            SCETextBuffer *snapshot = [buffer copy];
             NSString *before = i % 100 == 0 ? [reference copy] : nil;
             [buffer replaceCharactersInUTF16Range:range withString:text];
             [reference replaceCharactersInRange:range withString:text];
             if (before) {
                 CHECK([snapshot.string isEqualToString:before], "editing changed an older snapshot");
-                SECheckBuffer(buffer, reference);
+                SCECheckBuffer(buffer, reference);
             }
         }
     }
     // Exercise many tree rotations without allowing the reference to shrink.
     for (NSUInteger i = 0; i < 3000; i++) {
         NSString *text = @"abcdefghijklmnopqrstuvwxyz\n";
-        NSUInteger start = SERandom(reference.length + 1);
+        NSUInteger start = SCERandom(reference.length + 1);
         [buffer replaceCharactersInUTF16Range:NSMakeRange(start, 0) withString:text];
         [reference insertString:text atIndex:start];
     }
-    SECheckBuffer(buffer, reference);
+    SCECheckBuffer(buffer, reference);
     [buffer replaceCharactersInUTF16Range:NSMakeRange(0, buffer.lengthUTF16) withString:@""];
-    SECheckBuffer(buffer, @"");
+    SCECheckBuffer(buffer, @"");
     BOOL raised = NO;
     @try {
         [buffer substringWithUTF16Range:NSMakeRange(NSUIntegerMax, 2)];
@@ -116,50 +123,53 @@ static void SECheckRope(void) {
     puts("PASS rope: randomized edits, line index, snapshots, empty and invalid ranges");
 }
 
-static void SECommand(SEEditorView *editor, SEL selector) {
+static void SCECommand(SCEEditorView *editor, SEL selector) {
     [editor doCommandBySelector:selector];
 }
 
-static void SECheckEditing(void) {
-    SEEditorView *editor = [[SEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
-    editor.string = @"A👨‍👩‍👧‍👦e\u0301Z";
+static void SCECheckEditing(void) {
+    SCEEditorView *editor = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
+    editor.string = @"A\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466e\u0301Z";
     editor.selectedRange = NSMakeRange(editor.string.length - 1, 0);
-    SECommand(editor, @selector(deleteBackward:));
-    CHECK([editor.string isEqualToString:@"A👨‍👩‍👧‍👦Z"], "backspace must remove a combining cluster");
-    SECommand(editor, @selector(deleteBackward:));
+    SCECommand(editor, @selector(deleteBackward:));
+    CHECK([editor.string isEqualToString:@"A\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466Z"],
+          "backspace must remove a combining cluster");
+    SCECommand(editor, @selector(deleteBackward:));
     CHECK([editor.string isEqualToString:@"AZ"], "backspace must remove an entire emoji ZWJ sequence");
     [editor undo:nil];
-    CHECK([editor.string isEqualToString:@"A👨‍👩‍👧‍👦Z"], "undo must restore emoji");
+    CHECK([editor.string isEqualToString:@"A\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466Z"],
+          "undo must restore emoji");
     [editor redo:nil];
     CHECK([editor.string isEqualToString:@"AZ"], "redo must replay deletion");
     editor.string = @"a\r\nb";
     editor.selectedRange = NSMakeRange(3, 0);
-    SECommand(editor, @selector(deleteBackward:));
+    SCECommand(editor, @selector(deleteBackward:));
     CHECK([editor.string isEqualToString:@"ab"], "CRLF must delete as one cluster");
     editor.string = @"abcdef\nx\nabcdef";
     editor.selectedRange = NSMakeRange(5, 0);
-    SECommand(editor, @selector(moveDown:));
+    SCECommand(editor, @selector(moveDown:));
     CHECK(editor.selectedRange.location == 8, "vertical move must clamp on a short line");
-    SECommand(editor, @selector(moveDown:));
+    SCECommand(editor, @selector(moveDown:));
     CHECK(editor.selectedRange.location == 14, "vertical move must preserve preferred x");
-    SECommand(editor, @selector(moveLeftAndModifySelection:));
+    SCECommand(editor, @selector(moveLeftAndModifySelection:));
     CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(13, 1)), "shift-left selection differs");
-    SECommand(editor, @selector(moveRightAndModifySelection:));
+    SCECommand(editor, @selector(moveRightAndModifySelection:));
     CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(14, 0)), "shift selection must contract");
     editor.string = @"    if (ready) {\r\n}";
     editor.selectedRange = NSMakeRange(16, 0);
-    SECommand(editor, @selector(insertNewline:));
+    SCECommand(editor, @selector(insertNewline:));
     CHECK([editor.string hasPrefix:@"    if (ready) {\r\n    "], "newline must preserve CRLF and indentation");
     editor.editable = NO;
     NSString *before = editor.string;
     [editor insertText:@"blocked" replacementRange:NSMakeRange(NSNotFound, 0)];
-    SECommand(editor, @selector(deleteBackward:));
+    SCECommand(editor, @selector(deleteBackward:));
     CHECK([editor.string isEqualToString:before], "read-only mode must reject edits");
     puts("PASS editing: graphemes, CRLF, undo/redo, navigation, indentation, read-only mode");
 }
 
-static void SECheckComposition(void) {
-    SEEditorView *editor = [[SEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
+static void SCECheckComposition(void) {
+    // Escaped Chinese and Japanese text exercises input-method composition and undo.
+    SCEEditorView *editor = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
     editor.string = @"left right";
     editor.selectedRange = NSMakeRange(5, 5);
     [editor setMarkedText:@"n" selectedRange:NSMakeRange(1, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
@@ -167,22 +177,24 @@ static void SECheckComposition(void) {
     CHECK([editor.string isEqualToString:@"left ni"], "preedit must replace the preceding preedit");
     CHECK(NSEqualRanges(editor.markedRange, NSMakeRange(5, 2)), "marked range differs");
     CHECK(!editor.undoManager.canUndo, "intermediate preedits must not add undo steps");
-    [editor insertText:@"你" replacementRange:NSMakeRange(NSNotFound, 0)];
-    CHECK([editor.string isEqualToString:@"left 你"] && !editor.hasMarkedText, "committed text differs");
+    [editor insertText:@"\u4f60" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK([editor.string isEqualToString:@"left \u4f60"] && !editor.hasMarkedText, "committed text differs");
     [editor undo:nil];
     CHECK([editor.string isEqualToString:@"left right"], "one undo must restore the original selected text");
     CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(5, 5)), "composition undo must restore selection");
     CHECK(!editor.undoManager.canUndo, "a composition must create exactly one undo step");
     [editor redo:nil];
-    CHECK([editor.string isEqualToString:@"left 你"], "composition redo differs");
+    CHECK([editor.string isEqualToString:@"left \u4f60"], "composition redo differs");
     editor.string = @"original";
     editor.selectedRange = NSMakeRange(0, 8);
-    [editor setMarkedText:@"拼音" selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
-    SECommand(editor, @selector(cancelOperation:));
+    [editor setMarkedText:@"\u62fc\u97f3" selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    SCECommand(editor, @selector(cancelOperation:));
     CHECK([editor.string isEqualToString:@"original"] && !editor.hasMarkedText, "cancel must restore replaced content");
     CHECK(!editor.undoManager.canUndo, "cancelled composition must not add an undo step");
     editor.selectedRange = NSMakeRange(0, 0);
-    [editor setMarkedText:@"日本語" selectedRange:NSMakeRange(3, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    [editor setMarkedText:@"\u65e5\u672c\u8a9e"
+            selectedRange:NSMakeRange(3, 0)
+         replacementRange:NSMakeRange(NSNotFound, 0)];
     [editor unmarkText];
     [editor undo:nil];
     CHECK([editor.string isEqualToString:@"original"], "unmark must commit one undoable composition");
@@ -190,15 +202,15 @@ static void SECheckComposition(void) {
     NSAttributedString *substring = [editor attributedSubstringForProposedRange:NSMakeRange(0, NSUIntegerMax)
                                                                     actualRange:&actual];
     CHECK([substring.string isEqualToString:@"original"] && actual.length == 8,
-        "input-context range must clamp without overflow");
+          "input-context range must clamp without overflow");
     puts("PASS input protocol: preedit, replacement, commit, cancel, single-step undo, range queries");
 }
 
-static void SECheckSelectionPainting(void) {
-    SEEditorView *editor = [[SEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+static void SCECheckSelectionPainting(void) {
+    SCEEditorView *editor = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
     editor.showsLineNumbers = NO;
     editor.font = [NSFont monospacedSystemFontOfSize:13.3 weight:NSFontWeightRegular];
-    editor.string = @"- (void)loadView {\t// 中文🙂\n    \n}\n";
+    editor.string = @"- (void)loadView {\t// \u4e2d\u6587\U0001f642\n    \n}\n";
     [editor selectAll:nil];
     CGFloat lineHeight = [[editor valueForKey:@"lineHeight"] doubleValue];
     const CGFloat phases[] = {
@@ -214,8 +226,8 @@ static void SECheckSelectionPainting(void) {
             size_t stride = width * 4;
             uint8_t *pixels = calloc(height, stride);
             CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
-            CGContextRef bitmap = CGBitmapContextCreate(
-                pixels, width, height, 8, stride, colors, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+            CGContextRef bitmap = CGBitmapContextCreate(pixels, width, height, 8, stride, colors,
+                                                        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
             CGColorSpaceRelease(colors);
             CGContextScaleCTM(bitmap, scale, scale);
             CGContextSetShouldAntialias(bitmap, YES);
@@ -238,9 +250,9 @@ static void SECheckSelectionPainting(void) {
                     const uint8_t *pixel = pixels + y * stride + x * 4;
                     if (memcmp(pixel, expected, 4) != 0) {
                         fprintf(stderr,
-                            "Selection seam at scale %lu phase %.2f pixel (%zu, %zu): %u/%u/%u/%u vs %u/%u/%u/%u\n",
-                            (unsigned long)scale, phase, x, y, pixel[0], pixel[1], pixel[2], pixel[3], expected[0],
-                            expected[1], expected[2], expected[3]);
+                                "Selection seam at scale %lu phase %.2f pixel (%zu, %zu): %u/%u/%u/%u vs %u/%u/%u/%u\n",
+                                (unsigned long)scale, phase, x, y, pixel[0], pixel[1], pixel[2], pixel[3], expected[0],
+                                expected[1], expected[2], expected[3]);
                         solid = NO;
                         break;
                     }
@@ -251,23 +263,23 @@ static void SECheckSelectionPainting(void) {
             CHECK(solid, "multiline selection must have no seams at run, newline or row boundaries");
         }
     }
-    SETextBuffer *buffer = [[SETextBuffer alloc] initWithString:@"a中🙂\tend"];
-    SELineLayoutCache *cache = [[SELineLayoutCache alloc] initWithBuffer:buffer font:editor.font];
-    SELineLayout *line = [cache layoutForLineAtIndex:0];
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:@"a\u4e2d\U0001f642\tend"];
+    SCELineLayoutCache *cache = [[SCELineLayoutCache alloc] initWithBuffer:buffer font:editor.font];
+    SCELineLayout *line = [cache layoutForLineAtIndex:0];
     CHECK([line selectionRectsForUTF16Range:NSMakeRange(0, buffer.lengthUTF16) height:22].count == 1,
-        "adjacent font fallback and tab runs must merge into one visual span");
-    buffer = [[SETextBuffer alloc] initWithString:@"abc אבג def"];
-    cache = [[SELineLayoutCache alloc] initWithBuffer:buffer font:editor.font];
+          "adjacent font fallback and tab runs must merge into one visual span");
+    buffer = [[SCETextBuffer alloc] initWithString:@"abc \u05d0\u05d1\u05d2 def"];
+    cache = [[SCELineLayoutCache alloc] initWithBuffer:buffer font:editor.font];
     NSArray<NSValue *> *spans = [[cache layoutForLineAtIndex:0] selectionRectsForUTF16Range:NSMakeRange(0, 5)
                                                                                      height:22];
     CHECK(spans.count == 2 && NSMaxX(spans[0].rectValue) < NSMinX(spans[1].rectValue),
-        "merging selection spans must preserve genuinely unselected bidi gaps");
+          "merging selection spans must preserve unselected bidirectional text gaps");
     puts("PASS selection: seamless whole-path fill at 1x/2x fractional offsets, merged runs, disjoint bidi spans");
 }
 
 // Independent reference: match each bracket kind over the whole window with a
 // stack, then take the enclosing multiline pair whose opener is nearest.
-static NSRange SEReferenceBracketScope(NSString *text, NSUInteger offset, NSUInteger limit) {
+static NSRange SCEReferenceBracketScope(NSString *text, NSUInteger offset, NSUInteger limit) {
     NSUInteger lower = offset > limit ? offset - limit : 0;
     NSUInteger upper = MIN(text.length, offset + limit);
     NSString *opens = @"([{";
@@ -283,22 +295,26 @@ static NSRange SEReferenceBracketScope(NSString *text, NSUInteger offset, NSUInt
             continue;
         }
         kind = [closes rangeOfString:[NSString stringWithCharacters:&ch length:1]].location;
-        if (kind == NSNotFound || !stacks[kind].count)
+        if (kind == NSNotFound || !stacks[kind].count) {
             continue;
+        }
         NSUInteger open = stacks[kind].lastObject.unsignedIntegerValue;
         [stacks[kind] removeLastObject];
-        if (!(open < offset && i >= offset))
+        if (!(open < offset && i >= offset)) {
             continue;
+        }
         NSUInteger newlines = 0;
-        for (NSUInteger j = open; j < i; j++)
+        for (NSUInteger j = open; j < i; j++) {
             newlines += [text characterAtIndex:j] == '\n';
-        if (newlines >= 2 && (best.location == NSNotFound || open > best.location))
+        }
+        if (newlines >= 2 && (best.location == NSNotFound || open > best.location)) {
             best = NSMakeRange(open, i + 1 - open);
+        }
     }
     return best;
 }
 
-static void SECheckScopeGuide(void) {
+static void SCECheckScopeGuide(void) {
     NSString *swift = @"HStack(spacing: 0) {\n"
                        "    ForEach(tabs, id: \\.self) { tab in\n"
                        "        let isSelected = tab == selection\n"
@@ -311,10 +327,10 @@ static void SECheckScopeGuide(void) {
                        "        .buttonStyle(.plain)\n"
                        "    }\n"
                        "}\n";
-    SETextBuffer *buffer = [[SETextBuffer alloc] initWithString:swift];
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:swift];
     NSRange (^scope)(NSString *) = ^NSRange(NSString *marker) {
         NSRange found = [swift rangeOfString:marker];
-        return SEEnclosingMultilineBracketRange(buffer, found.location, SEBracketScopeDefaultScanLimit);
+        return SCEEnclosingMultilineBracketRange(buffer, found.location, SCEBracketScopeDefaultScanLimit);
     };
     NSUInteger forEachOpen = [swift rangeOfString:@"{ tab in"].location;
     NSUInteger forEachClose = [swift rangeOfString:@"    }\n}"].location + 4;
@@ -328,47 +344,49 @@ static void SECheckScopeGuide(void) {
     CHECK(NSEqualRanges(scope(@"selection = tab"), button), "a block with one inner line has a scope");
     CHECK(NSEqualRanges(scope(@"} label"), button), "caret before a closing brace belongs to that scope");
     CHECK(NSEqualRanges(scope(@"label: {"), forEach), "caret after a closing brace belongs to the outer scope");
-    SETextBuffer *adjacent = [[SETextBuffer alloc] initWithString:@"{\n  a {\n  }\n}"];
-    CHECK(SEEnclosingMultilineBracketRange(adjacent, 8, SEBracketScopeDefaultScanLimit).location == 0,
-        "brackets on adjacent lines enclose no line, so the outer scope is used");
+    SCETextBuffer *adjacent = [[SCETextBuffer alloc] initWithString:@"{\n  a {\n  }\n}"];
+    CHECK(SCEEnclosingMultilineBracketRange(adjacent, 8, SCEBracketScopeDefaultScanLimit).location == 0,
+          "brackets on adjacent lines enclose no line, so the outer scope is used");
     NSUInteger labelOpen = [swift rangeOfString:@"label: {"].location + 7;
-    NSRange label = SEEnclosingMultilineBracketRange(buffer, labelOpen + 1, SEBracketScopeDefaultScanLimit);
+    NSRange label = SCEEnclosingMultilineBracketRange(buffer, labelOpen + 1, SCEBracketScopeDefaultScanLimit);
     CHECK(label.location == labelOpen && [swift characterAtIndex:NSMaxRange(label) - 1] == '}',
-        "caret right after an opening brace belongs to that scope");
-    CHECK(SEEnclosingMultilineBracketRange(buffer, 0, SEBracketScopeDefaultScanLimit).location == NSNotFound,
-        "top level has no scope");
-    CHECK(SEEnclosingMultilineBracketRange(buffer, swift.length, SEBracketScopeDefaultScanLimit).location == NSNotFound,
-        "end of document has no scope");
-    CHECK(SEEnclosingMultilineBracketRange(buffer, [swift rangeOfString:@"let"].location, 8).location == NSNotFound,
-        "brackets beyond the scan limit must be ignored");
-    SETextBuffer *unclosed = [[SETextBuffer alloc] initWithString:@"{\n  call(\n  x\n  y\n}"];
-    CHECK(SEEnclosingMultilineBracketRange(unclosed, 13, SEBracketScopeDefaultScanLimit).location == 0,
-        "an unclosed ( must not hide the enclosing { scope");
+          "caret right after an opening brace belongs to that scope");
+    CHECK(SCEEnclosingMultilineBracketRange(buffer, 0, SCEBracketScopeDefaultScanLimit).location == NSNotFound,
+          "top level has no scope");
+    CHECK(SCEEnclosingMultilineBracketRange(buffer, swift.length, SCEBracketScopeDefaultScanLimit).location ==
+              NSNotFound,
+          "end of document has no scope");
+    CHECK(SCEEnclosingMultilineBracketRange(buffer, [swift rangeOfString:@"let"].location, 8).location == NSNotFound,
+          "brackets beyond the scan limit must be ignored");
+    SCETextBuffer *unclosed = [[SCETextBuffer alloc] initWithString:@"{\n  call(\n  x\n  y\n}"];
+    CHECK(SCEEnclosingMultilineBracketRange(unclosed, 13, SCEBracketScopeDefaultScanLimit).location == 0,
+          "an unclosed ( must not hide the enclosing { scope");
 
-    // Random bracket soup, long enough to cross reader chunks in both directions.
+    // Random bracket sequences cross text-reading chunk boundaries in both directions.
     NSString *alphabet = @"(){}[]\n\nab ";
     for (NSUInteger round = 0; round < 300; round++) {
-        NSUInteger length = round < 20 ? 9000 + SERandom(4000) : SERandom(400);
+        NSUInteger length = round < 20 ? 9000 + SCERandom(4000) : SCERandom(400);
         NSMutableString *text = [NSMutableString stringWithCapacity:length];
         for (NSUInteger i = 0; i < length; i++) {
-            unichar ch = [alphabet characterAtIndex:SERandom(alphabet.length)];
+            unichar ch = [alphabet characterAtIndex:SCERandom(alphabet.length)];
             [text appendString:[NSString stringWithCharacters:&ch length:1]];
         }
-        SETextBuffer *soup = [[SETextBuffer alloc] initWithString:text];
+        SCETextBuffer *randomBuffer = [[SCETextBuffer alloc] initWithString:text];
         for (NSUInteger probe = 0; probe < 20; probe++) {
-            NSUInteger offset = SERandom(text.length + 1);
-            NSUInteger limit = probe % 4 == 0 ? 1 + SERandom(6000) : SEBracketScopeDefaultScanLimit;
-            NSRange actual = SEEnclosingMultilineBracketRange(soup, offset, limit);
-            NSRange expected = SEReferenceBracketScope(text, offset, limit);
-            if (!NSEqualRanges(actual, expected))
+            NSUInteger offset = SCERandom(text.length + 1);
+            NSUInteger limit = probe % 4 == 0 ? 1 + SCERandom(6000) : SCEBracketScopeDefaultScanLimit;
+            NSRange actual = SCEEnclosingMultilineBracketRange(randomBuffer, offset, limit);
+            NSRange expected = SCEReferenceBracketScope(text, offset, limit);
+            if (!NSEqualRanges(actual, expected)) {
                 fprintf(stderr, "length %lu offset %lu limit %lu: got %s, expected %s\n", (unsigned long)length,
-                    (unsigned long)offset, (unsigned long)limit, NSStringFromRange(actual).UTF8String,
-                    NSStringFromRange(expected).UTF8String);
+                        (unsigned long)offset, (unsigned long)limit, NSStringFromRange(actual).UTF8String,
+                        NSStringFromRange(expected).UTF8String);
+            }
             CHECK(NSEqualRanges(actual, expected), "bracket scope must match the stack reference");
         }
     }
 
-    SEEditorView *editor = [[SEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
+    SCEEditorView *editor = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
     editor.showsLineNumbers = NO;
     editor.string = swift;
     editor.selectedRange = NSMakeRange([swift rangeOfString:@"let"].location, 0);
@@ -377,7 +395,7 @@ static void SECheckScopeGuide(void) {
     [editor insertText:@"\n" replacementRange:NSMakeRange(0, 0)];
     editor.selectedRange = NSMakeRange([swift rangeOfString:@"let"].location + 1, 0);
     CHECK(NSEqualRanges(editor.scopeGuideBracketRange, NSMakeRange(forEach.location + 1, forEach.length)),
-        "scope must follow edits");
+          "scope must follow edits");
 
     // Only the guide differs between the two renderings, in one thin column
     // that spans exactly the lines inside the brackets.
@@ -393,7 +411,7 @@ static void SECheckScopeGuide(void) {
         renders[pass] = calloc(height, width * 4);
         CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
         CGContextRef bitmap = CGBitmapContextCreate(renders[pass], width, height, 8, width * 4, colors,
-            kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+                                                    kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
         CGColorSpaceRelease(colors);
         CGContextScaleCTM(bitmap, scale, scale);
         [NSGraphicsContext saveGraphicsState];
@@ -419,14 +437,14 @@ static void SECheckScopeGuide(void) {
     free(renders[1]);
     size_t expectedX = (size_t)round((12 + indentX) * scale);
     CHECK(indentX > 0 && minX == expectedX && maxX == expectedX + scale - 1,
-        "guide must be one point wide at the opening line's indentation");
+          "guide must be one point wide at the opening line's indentation");
     CHECK(rows == (size_t)round(8 * lineHeight * scale), "guide must span exactly the lines inside the brackets");
     puts("PASS scope guide: innermost multiline bracket pair, stack-reference fuzzing, edits, guide pixels");
 }
 
 typedef struct {
     CGPoint points[4];
-} SEInspectedCubic;
+} SCEInspectedCubic;
 
 typedef struct {
     CGPoint current;
@@ -434,85 +452,85 @@ typedef struct {
     NSUInteger contours;
     NSUInteger closes;
     NSUInteger cubicCount;
-    SEInspectedCubic cubics[128];
-} SEPathInspection;
+    SCEInspectedCubic cubics[128];
+} SCEPathInspection;
 
-static void SEInspectPath(void *info, const CGPathElement *element) {
-    SEPathInspection *state = info;
+static void SCEInspectPath(void *info, const CGPathElement *element) {
+    SCEPathInspection *state = info;
     switch (element->type) {
-    case kCGPathElementMoveToPoint:
-        state->current = element->points[0];
-        state->start = state->current;
-        state->contours++;
-        break;
-    case kCGPathElementAddLineToPoint:
-        state->current = element->points[0];
-        break;
-    case kCGPathElementAddQuadCurveToPoint:
-        state->current = element->points[1];
-        break;
-    case kCGPathElementAddCurveToPoint:
-        if (state->cubicCount < 128) {
-            SEInspectedCubic *curve = &state->cubics[state->cubicCount];
-            curve->points[0] = state->current;
-            memcpy(&curve->points[1], element->points, sizeof(CGPoint) * 3);
-        }
-        state->cubicCount++;
-        state->current = element->points[2];
-        break;
-    case kCGPathElementCloseSubpath:
-        state->current = state->start;
-        state->closes++;
-        break;
+        case kCGPathElementMoveToPoint:
+            state->current = element->points[0];
+            state->start = state->current;
+            state->contours++;
+            break;
+        case kCGPathElementAddLineToPoint:
+            state->current = element->points[0];
+            break;
+        case kCGPathElementAddQuadCurveToPoint:
+            state->current = element->points[1];
+            break;
+        case kCGPathElementAddCurveToPoint:
+            if (state->cubicCount < 128) {
+                SCEInspectedCubic *curve = &state->cubics[state->cubicCount];
+                curve->points[0] = state->current;
+                memcpy(&curve->points[1], element->points, sizeof(CGPoint) * 3);
+            }
+            state->cubicCount++;
+            state->current = element->points[2];
+            break;
+        case kCGPathElementCloseSubpath:
+            state->current = state->start;
+            state->closes++;
+            break;
     }
 }
 
-static CGPoint SEPointDifference(CGPoint a, CGPoint b) {
+static CGPoint SCEPointDifference(CGPoint a, CGPoint b) {
     return CGPointMake(a.x - b.x, a.y - b.y);
 }
 
-static CGPoint SESecondDifference(CGPoint a, CGPoint b, CGPoint c) {
+static CGPoint SCESecondDifference(CGPoint a, CGPoint b, CGPoint c) {
     return CGPointMake(a.x - 2 * b.x + c.x, a.y - 2 * b.y + c.y);
 }
 
-static CGFloat SECross(CGPoint a, CGPoint b) {
+static CGFloat SCECross(CGPoint a, CGPoint b) {
     return a.x * b.y - a.y * b.x;
 }
 
-static BOOL SEPointsNear(CGPoint a, CGPoint b) {
+static BOOL SCEPointsNear(CGPoint a, CGPoint b) {
     return hypot(a.x - b.x, a.y - b.y) < 1e-8;
 }
 
-static void SECheckSelectionContours(void) {
+static void SCECheckSelectionContours(void) {
     NSArray<NSValue *> *steps = @[
         [NSValue valueWithRect:NSMakeRect(60, 10, 80, 20)],
         [NSValue valueWithRect:NSMakeRect(10, 30, 130, 20)],
         [NSValue valueWithRect:NSMakeRect(10, 50, 70, 20)],
     ];
-    CGPathRef path = SECreateSelectionPath(steps, 4);
-    SEPathInspection inspection = {
+    CGPathRef path = SCECreateSelectionPath(steps, 4);
+    SCEPathInspection inspection = {
         0,
     };
-    CGPathApply(path, &inspection, SEInspectPath);
+    CGPathApply(path, &inspection, SCEInspectPath);
     CHECK(inspection.contours == 1 && inspection.closes == 1 && inspection.cubicCount == 16,
-        "a stepped selection must have one closed contour with every convex and concave corner rounded");
+          "a stepped selection must have one closed contour with every convex and concave corner rounded");
     CHECK(!CGPathContainsPoint(path, NULL, CGPointMake(60.1, 10.1), NO), "outer corner must cut away its sharp tip");
     CHECK(CGPathContainsPoint(path, NULL, CGPointMake(59.9, 29.9), NO),
-        "upper concave junction must round into its notch");
+          "upper concave junction must round into its notch");
     CHECK(CGPathContainsPoint(path, NULL, CGPointMake(80.1, 50.1), NO),
-        "lower concave junction must round into its notch");
+          "lower concave junction must round into its notch");
     CHECK(CGPathContainsPoint(path, NULL, CGPointMake(100, 30), NO), "joined rows must remain solid");
     for (NSUInteger i = 0; i < inspection.cubicCount; i += 2) {
         CGPoint *a = inspection.cubics[i].points;
         CGPoint *b = inspection.cubics[i + 1].points;
-        CHECK(fabs(SECross(SEPointDifference(a[1], a[0]), SESecondDifference(a[2], a[1], a[0]))) < 1e-8,
-            "corner curvature must start at zero on the incoming straight edge");
-        CHECK(fabs(SECross(SEPointDifference(b[3], b[2]), SESecondDifference(b[3], b[2], b[1]))) < 1e-8,
-            "corner curvature must end at zero on the outgoing straight edge");
-        CHECK(SEPointsNear(SEPointDifference(a[3], a[2]), SEPointDifference(b[1], b[0])),
-            "corner halves must have equal first derivatives");
-        CHECK(SEPointsNear(SESecondDifference(a[3], a[2], a[1]), SESecondDifference(b[2], b[1], b[0])),
-            "corner halves must have equal second derivatives for continuous curvature");
+        CHECK(fabs(SCECross(SCEPointDifference(a[1], a[0]), SCESecondDifference(a[2], a[1], a[0]))) < 1e-8,
+              "corner curvature must start at zero on the incoming straight edge");
+        CHECK(fabs(SCECross(SCEPointDifference(b[3], b[2]), SCESecondDifference(b[3], b[2], b[1]))) < 1e-8,
+              "corner curvature must end at zero on the outgoing straight edge");
+        CHECK(SCEPointsNear(SCEPointDifference(a[3], a[2]), SCEPointDifference(b[1], b[0])),
+              "corner halves must have equal first derivatives");
+        CHECK(SCEPointsNear(SCESecondDifference(a[3], a[2], a[1]), SCESecondDifference(b[2], b[1], b[0])),
+              "corner halves must have equal second derivatives for continuous curvature");
     }
     CGPathRelease(path);
     NSArray<NSValue *> *ring = @[
@@ -521,30 +539,30 @@ static void SECheckSelectionContours(void) {
         [NSValue valueWithRect:NSMakeRect(0, 10, 10, 80)],
         [NSValue valueWithRect:NSMakeRect(90, 10, 10, 80)],
     ];
-    path = SECreateSelectionPath(ring, 4);
-    inspection = (SEPathInspection){
+    path = SCECreateSelectionPath(ring, 4);
+    inspection = (SCEPathInspection){
         0,
     };
-    CGPathApply(path, &inspection, SEInspectPath);
-    CHECK(
-        inspection.contours == 2 && inspection.closes == 2, "selection holes need separately oriented closed contours");
-    CHECK(!CGPathContainsPoint(path, NULL, CGPointMake(50, 50), NO)
-            && CGPathContainsPoint(path, NULL, CGPointMake(50, 5), NO),
-        "rounding must preserve unselected holes");
-    CGPathRelease(path);
-    path = SECreateSelectionPath(
-        @[ [NSValue valueWithRect:NSMakeRect(0, 0, 20, 20)], [NSValue valueWithRect:NSMakeRect(20, 20, 20, 20)] ], 4);
-    inspection = (SEPathInspection){
-        0,
-    };
-    CGPathApply(path, &inspection, SEInspectPath);
+    CGPathApply(path, &inspection, SCEInspectPath);
     CHECK(inspection.contours == 2 && inspection.closes == 2,
-        "diagonal point contacts must not weld disconnected selections");
+          "selection holes need separately oriented closed contours");
+    CHECK(!CGPathContainsPoint(path, NULL, CGPointMake(50, 50), NO) &&
+              CGPathContainsPoint(path, NULL, CGPointMake(50, 5), NO),
+          "rounding must preserve unselected holes");
     CGPathRelease(path);
-    path = SECreateSelectionPath(@[ [NSValue valueWithRect:NSMakeRect(0, 0, 1, 22)] ], 4);
-    CHECK(CGRectEqualToRect(CGPathGetBoundingBox(path), CGRectMake(0, 0, 1, 22))
-            && CGPathContainsPoint(path, NULL, CGPointMake(0.5, 11), NO),
-        "narrow selections must clamp their corners without collapsing");
+    path = SCECreateSelectionPath(
+        @[ [NSValue valueWithRect:NSMakeRect(0, 0, 20, 20)], [NSValue valueWithRect:NSMakeRect(20, 20, 20, 20)] ], 4);
+    inspection = (SCEPathInspection){
+        0,
+    };
+    CGPathApply(path, &inspection, SCEInspectPath);
+    CHECK(inspection.contours == 2 && inspection.closes == 2,
+          "diagonal point contacts must not weld disconnected selections");
+    CGPathRelease(path);
+    path = SCECreateSelectionPath(@[ [NSValue valueWithRect:NSMakeRect(0, 0, 1, 22)] ], 4);
+    CHECK(CGRectEqualToRect(CGPathGetBoundingBox(path), CGRectMake(0, 0, 1, 22)) &&
+              CGPathContainsPoint(path, NULL, CGPointMake(0.5, 11), NO),
+          "narrow selections must clamp their corners without collapsing");
     CGPathRelease(path);
     // Compare unrounded contour topology to the rectangle union independently
     // of path tracing. Cover partial row overlaps, gaps and multiple components.
@@ -552,21 +570,22 @@ static void SECheckSelectionContours(void) {
         NSMutableArray<NSValue *> *rects = [NSMutableArray array];
         for (NSUInteger row = 0; row < 8; row++) {
             for (NSUInteger span = 0; span < 2; span++) {
-                NSRect rect = NSMakeRect(SERandom(80), row * 10, 1 + SERandom(40), 10);
+                NSRect rect = NSMakeRect(SCERandom(80), row * 10, 1 + SCERandom(40), 10);
                 [rects addObject:[NSValue valueWithRect:rect]];
             }
         }
-        path = SECreateSelectionPath(rects, 0);
+        path = SCECreateSelectionPath(rects, 0);
         for (NSUInteger sample = 0; sample < 160; sample++) {
-            CGPoint point = CGPointMake(SERandom(120) + 0.37, SERandom(80) + 0.37);
+            CGPoint point = CGPointMake(SCERandom(120) + 0.37, SCERandom(80) + 0.37);
             BOOL inUnion = NO;
-            for (NSValue *value in rects)
+            for (NSValue *value in rects) {
                 if (CGRectContainsPoint(value.rectValue, point)) {
                     inUnion = YES;
                     break;
                 }
+            }
             CHECK(CGPathContainsPoint(path, NULL, point, NO) == inUnion,
-                "traced selection contour differs from the source rectangle union");
+                  "traced selection contour differs from the source rectangle union");
         }
         CGPathRelease(path);
     }
@@ -574,26 +593,27 @@ static void SECheckSelectionContours(void) {
         "PASS selection contours: G2 corners, concave junctions, holes, point contacts, narrow spans, randomized union topology");
 }
 
-static void SECheckLayoutAndViewport(void) {
-    NSRange visible = [SEViewport lineRangeForVisibleRect:CGRectMake(0, 1000000, 800, 600)
-                                                lineCount:1000000
-                                               lineHeight:22
-                                                 topInset:12
-                                                 overscan:6];
+static void SCECheckLayoutAndViewport(void) {
+    NSRange visible = [SCEViewport lineRangeForVisibleRect:CGRectMake(0, 1000000, 800, 600)
+                                                 lineCount:1000000
+                                                lineHeight:22
+                                                  topInset:12
+                                                  overscan:6];
     CHECK(visible.length < 50 && visible.location > 40000, "viewport must bound work by visible rows");
-    SETextBuffer *buffer = [[SETextBuffer alloc] initWithString:@"abc\nkeep\nlast"];
-    SELineLayoutCache *cache =
-        [[SELineLayoutCache alloc] initWithBuffer:buffer
-                                             font:[NSFont monospacedSystemFontOfSize:14 weight:NSFontWeightRegular]];
-    SELineLayout *keep = [cache layoutForLineAtIndex:1];
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:@"abc\nkeep\nlast"];
+    SCELineLayoutCache *cache =
+        [[SCELineLayoutCache alloc] initWithBuffer:buffer
+                                              font:[NSFont monospacedSystemFontOfSize:14 weight:NSFontWeightRegular]];
+    SCELineLayout *keep = [cache layoutForLineAtIndex:1];
     [buffer replaceCharactersInUTF16Range:NSMakeRange(1, 0) withString:@"\n"];
     [cache invalidateLinesInRange:NSMakeRange(0, 1) lineDelta:1];
     CHECK([cache layoutForLineAtIndex:2] == keep, "unaffected line layout must survive line insertion");
     [cache retainLinesInRange:NSMakeRange(0, 1)];
     CHECK(cache.cachedLineCount == 0, "offscreen cache entries must be evicted");
-    SETextBuffer *unicode = [[SETextBuffer alloc] initWithString:@"a👨‍👩‍👧‍👦e\u0301\tZ"];
-    SELineLayoutCache *unicodeCache = [[SELineLayoutCache alloc] initWithBuffer:unicode font:cache.font];
-    SELineLayout *line = [unicodeCache layoutForLineAtIndex:0];
+    SCETextBuffer *unicode =
+        [[SCETextBuffer alloc] initWithString:@"a\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466e\u0301\tZ"];
+    SCELineLayoutCache *unicodeCache = [[SCELineLayoutCache alloc] initWithBuffer:unicode font:cache.font];
+    SCELineLayout *line = [unicodeCache layoutForLineAtIndex:0];
     NSString *text = unicode.string;
     NSUInteger offset = 0;
     while (offset < text.length) {
@@ -605,16 +625,17 @@ static void SECheckLayoutAndViewport(void) {
     CGFloat afterTab = [line xForUTF16Index:text.length - 1];
     CHECK(afterTab > beforeTab, "tab must advance to a tab stop");
     CHECK([line selectionRectsForUTF16Range:NSMakeRange(0, text.length) height:22].count > 0,
-        "selection must produce visual rectangles");
+          "selection must produce visual rectangles");
 
     NSMutableString *large = [NSMutableString stringWithCapacity:3000000];
-    for (NSUInteger i = 0; i < 100000; i++)
+    for (NSUInteger i = 0; i < 100000; i++) {
         [large appendFormat:@"line %lu: native text rendering\n", (unsigned long)i];
-    NSScrollView *scroll = [SEEditorView scrollableEditorView];
+    }
+    NSScrollView *scroll = [SCEEditorView scrollableEditorView];
     scroll.frame = NSMakeRect(0, 0, 800, 600);
-    SEEditorView *editor = (SEEditorView *)scroll.documentView;
+    SCEEditorView *editor = (SCEEditorView *)scroll.documentView;
     editor.string = large;
-    SELineLayoutCache *editorCache = [editor valueForKey:@"layoutCache"];
+    SCELineLayoutCache *editorCache = [editor valueForKey:@"layoutCache"];
     CHECK(editorCache.cachedLineCount < 100, "large document must not lay out all lines");
     NSUInteger builds = editorCache.totalLayoutBuildCount;
     editor.selectedRange = NSMakeRange(2, 0);
@@ -625,9 +646,10 @@ static void SECheckLayoutAndViewport(void) {
     [scroll.contentView scrollToPoint:NSMakePoint(0, 500000)];
     [scroll reflectScrolledClipView:scroll.contentView];
     CHECK(editorCache.cachedLineCount < 100, "scrolling must keep the line cache bounded");
-    for (NSView *surface in editor.subviews)
+    for (NSView *surface in editor.subviews) {
         CHECK(NSHeight(surface.frame) <= NSHeight(scroll.contentView.bounds) + 1,
-            "layer surfaces must remain viewport-sized");
+              "layer surfaces must remain viewport-sized");
+    }
 
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 800, 600)
                                                    styleMask:NSWindowStyleMaskTitled
@@ -635,7 +657,7 @@ static void SECheckLayoutAndViewport(void) {
                                                        defer:NO];
     window.releasedWhenClosed = NO;
     window.contentView = scroll;
-    editor.string = @"abc中文\nnext";
+    editor.string = @"abc\u4e2d\u6587\nnext";
     NSRange actual;
     NSRect screen = [editor firstRectForCharacterRange:NSMakeRange(3, 0) actualRange:&actual];
     NSUInteger hit = [editor characterIndexForPoint:NSMakePoint(NSMinX(screen), NSMidY(screen))];
@@ -648,46 +670,47 @@ static void SECheckLayoutAndViewport(void) {
                                      timestamp:0
                                   windowNumber:window.windowNumber
                                        context:nil
-                                    characters:@"中🙂"
-                   charactersIgnoringModifiers:@"中🙂"
+                                    characters:@"\u4e2d\U0001f642"
+                   charactersIgnoringModifiers:@"\u4e2d\U0001f642"
                                      isARepeat:NO
                                        keyCode:0];
     [editor keyDown:event];
-    CHECK([editor.string isEqualToString:@"中🙂"], "Unicode key events must reach native text insertion");
+    CHECK([editor.string isEqualToString:@"\u4e2d\U0001f642"], "Unicode key events must reach native text insertion");
     editor.string = large;
     editor.selectedRange = NSMakeRange(large.length, 0);
     [editor selectAll:nil];
     [editor insertText:@"one\ntwo" replacementRange:NSMakeRange(NSNotFound, 0)];
     CHECK(NSMaxY(editor.subviews.firstObject.frame) <= NSHeight(editor.frame) + 1,
-        "deleting the document tail must clamp the viewport");
+          "deleting the document tail must clamp the viewport");
     [window close];
     puts("PASS layout: cache reuse, Unicode hit testing, tabs, viewport bounds, 100k lines, IME screen coordinates");
 }
 
-static int SECompareDoubles(const void *a, const void *b) {
+static int SCECompareDoubles(const void *a, const void *b) {
     double lhs = *(const double *)a;
     double rhs = *(const double *)b;
     return lhs < rhs ? -1 : lhs > rhs ? 1 : 0;
 }
 
-static void SEBenchmark(void) {
+static void SCEBenchmark(void) {
     NSMutableString *text = [NSMutableString stringWithCapacity:4000000];
-    for (NSUInteger i = 0; i < 100000; i++)
+    for (NSUInteger i = 0; i < 100000; i++) {
         [text appendString:@"    let value = compute(input) // native\n"];
+    }
     uint64_t start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    SETextBuffer *buffer = [[SETextBuffer alloc] initWithString:text];
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:text];
     double loadMS = (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start) / 1e6;
     double samples[500];
     for (NSUInteger i = 0; i < 500; i++) {
         @autoreleasepool {
-            NSUInteger location = SERandom(buffer.lengthUTF16 + 1);
+            NSUInteger location = SCERandom(buffer.lengthUTF16 + 1);
             uint64_t tick = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
             [buffer replaceCharactersInUTF16Range:NSMakeRange(location, 0) withString:@"x"];
             [buffer replaceCharactersInUTF16Range:NSMakeRange(location, 1) withString:@""];
             samples[i] = (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tick) / 1e6;
         }
     }
-    qsort(samples, 500, sizeof(double), SECompareDoubles);
+    qsort(samples, 500, sizeof(double), SCECompareDoubles);
     CHECK([buffer.string isEqualToString:text], "benchmark edits must round-trip");
     printf(
         "BUFFER BENCH (unoptimized debug build): %.1f Mi UTF-16 units, 100k lines, build %.2f ms, insert+delete p50 %.3f ms / p95 %.3f ms\n",
@@ -697,16 +720,16 @@ static void SEBenchmark(void) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         [NSApplication sharedApplication];
-        SECheckRope();
-        SECheckEditing();
-        SECheckComposition();
-        SECheckSelectionContours();
-        SECheckSelectionPainting();
-        SECheckScopeGuide();
-        SECheckLayoutAndViewport();
-        SECheckCount += SECheckSyntaxCore();
-        SEBenchmark();
-        printf("All %lu checks passed.\n", (unsigned long)SECheckCount);
+        SCECheckRope();
+        SCECheckEditing();
+        SCECheckComposition();
+        SCECheckSelectionContours();
+        SCECheckSelectionPainting();
+        SCECheckScopeGuide();
+        SCECheckLayoutAndViewport();
+        SCECheckCount += SCECheckSyntaxCore();
+        SCEBenchmark();
+        printf("All %lu checks passed.\n", (unsigned long)SCECheckCount);
     }
     return 0;
 }

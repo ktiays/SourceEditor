@@ -1,13 +1,13 @@
 #import <AppKit/AppKit.h>
 #import <CoreText/CoreText.h>
-#import "include/SETextBuffer.h"
-#import "include/SESyntaxTheme.h"
+#import "include/SCETextBuffer.h"
+#import "include/SCESyntaxTheme.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface SELineLayout : NSObject
+@interface SCELineLayout : NSObject
 @property (nonatomic, readonly) CTLineRef line;
-@property (nonatomic, readonly) NSString *text;
+@property (nonatomic, readonly, copy) NSString *text;
 @property (nonatomic, readonly) CGFloat width;
 
 - (CGFloat)xForUTF16Index:(NSUInteger)index;
@@ -17,17 +17,17 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSArray<NSValue *> *)selectionRectsForUTF16Range:(NSRange)range height:(CGFloat)height;
 @end
 
-@interface SELineLayoutCache : NSObject
-- (instancetype)initWithBuffer:(SETextBuffer *)buffer font:(NSFont *)font;
+@interface SCELineLayoutCache : NSObject
+- (instancetype)initWithBuffer:(SCETextBuffer *)buffer font:(NSFont *)font;
 @property (nonatomic, copy) NSFont *font;
 @property (nonatomic, copy) NSColor *textColor;
 @property (nonatomic) NSUInteger tabWidth;
-@property (nonatomic, copy) SESyntaxTheme *syntaxTheme;
+@property (nonatomic, copy) SCESyntaxTheme *syntaxTheme;
 @property (nonatomic, strong, nullable) NSAppearance *appearance;
 @property (nonatomic, readonly) NSUInteger cachedLineCount;
 @property (nonatomic, readonly) NSUInteger totalLayoutBuildCount;
 
-- (SELineLayout *)layoutForLineAtIndex:(NSUInteger)lineIndex;
+- (SCELineLayout *)layoutForLineAtIndex:(NSUInteger)lineIndex;
 
 - (void)invalidateLinesInRange:(NSRange)oldLineRange lineDelta:(NSInteger)delta;
 
@@ -36,7 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)removeAllLayouts;
 
 /// Returns whether any line's presentation actually changed.
-- (BOOL)applySyntaxTokens:(NSArray<SESyntaxToken *> *)tokens toLineRange:(NSRange)lineRange;
+- (BOOL)applySyntaxTokens:(NSArray<SCESyntaxToken *> *)tokens toLineRange:(NSRange)lineRange;
 
 - (void)removeAllSyntaxTokens;
 @end

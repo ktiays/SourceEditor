@@ -1,33 +1,33 @@
 #import <AppKit/AppKit.h>
-#import "SEStatusBarView.h"
+#import "SCEStatusBarView.h"
 @import SourceEditor;
 @import SourceEditorTreeSitter;
 
-typedef NS_ENUM(NSInteger, SEDemoSyntaxLanguage) {
-    SEDemoSyntaxLanguagePlainText,
-    SEDemoSyntaxLanguageJSON,
-    SEDemoSyntaxLanguageJavaScript,
+typedef NS_ENUM(NSInteger, SCEDemoSyntaxLanguage) {
+    SCEDemoSyntaxLanguagePlainText,
+    SCEDemoSyntaxLanguageJSON,
+    SCEDemoSyntaxLanguageJavaScript,
 };
 
-@interface SEDemoDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface SCEDemoDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property (nonatomic, strong) NSWindow *window;
-@property (nonatomic, strong) SEEditorView *editor;
-@property (nonatomic, strong) SEStatusBarView *statusBar;
+@property (nonatomic, strong) SCEEditorView *editor;
+@property (nonatomic, strong) SCEStatusBarView *statusBar;
 @property (nonatomic, strong) NSMenu *syntaxMenu;
-// The languages the user can pick from, in display order.
+// Available syntax languages in display order.
 @property (nonatomic, copy) NSArray<NSNumber *> *availableLanguages;
-@property (nonatomic) SEDemoSyntaxLanguage syntaxLanguage;
+@property (nonatomic) SCEDemoSyntaxLanguage syntaxLanguage;
 @end
 
-// Status bar configuration, read from user defaults so it can also be passed
-// as launch arguments. Each value is an array or a comma-separated string:
-//   SEStatusBarItems   line, column, lineCount, language (all by default)
-//   SESyntaxLanguages  plaintext, json, javascript (all by default)
-// An empty value hides that part; a single language is fixed.
-static NSString *const SEDemoStatusBarItemsKey = @"SEStatusBarItems";
-static NSString *const SEDemoSyntaxLanguagesKey = @"SESyntaxLanguages";
+// Status bar configuration is read from user defaults and launch arguments.
+// Each value is an array or a comma-separated string:
+//   SCEStatusBarItems   line, column, lineCount, language (all by default)
+//   SCESyntaxLanguages  plaintext, json, javascript (all by default)
+// An empty value hides the corresponding control; one language displays a fixed label.
+static NSString *const SCEDemoStatusBarItemsKey = @"SCEStatusBarItems";
+static NSString *const SCEDemoSyntaxLanguagesKey = @"SCESyntaxLanguages";
 
-static NSArray<NSString *> *SEDemoStringList(NSString *key, NSArray<NSString *> *defaultValue) {
+static NSArray<NSString *> *SCEDemoStringList(NSString *key, NSArray<NSString *> *defaultValue) {
     id value = [NSUserDefaults.standardUserDefaults objectForKey:key];
     NSArray *components = nil;
     if ([value isKindOfClass:NSArray.class]) {
@@ -50,28 +50,28 @@ static NSArray<NSString *> *SEDemoStringList(NSString *key, NSArray<NSString *> 
     return list;
 }
 
-static NSString *SEDemoSyntaxLanguageName(SEDemoSyntaxLanguage language) {
+static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     switch (language) {
-    case SEDemoSyntaxLanguagePlainText:
-        return @"Plain Text";
-    case SEDemoSyntaxLanguageJSON:
-        return @"JSON";
-    case SEDemoSyntaxLanguageJavaScript:
-        return @"JavaScript";
+        case SCEDemoSyntaxLanguagePlainText:
+            return @"Plain Text";
+        case SCEDemoSyntaxLanguageJSON:
+            return @"JSON";
+        case SCEDemoSyntaxLanguageJavaScript:
+            return @"JavaScript";
     }
     return @"Plain Text";
 }
 
-@implementation SEDemoDelegate
+@implementation SCEDemoDelegate
 
 - (void)loadConfiguration {
     NSDictionary<NSString *, NSNumber *> *identifiers = @{
-        @"plaintext" : @(SEDemoSyntaxLanguagePlainText),
-        @"json" : @(SEDemoSyntaxLanguageJSON),
-        @"javascript" : @(SEDemoSyntaxLanguageJavaScript),
+        @"plaintext" : @(SCEDemoSyntaxLanguagePlainText),
+        @"json" : @(SCEDemoSyntaxLanguageJSON),
+        @"javascript" : @(SCEDemoSyntaxLanguageJavaScript),
     };
     NSMutableArray<NSNumber *> *languages = [NSMutableArray array];
-    for (NSString *name in SEDemoStringList(SEDemoSyntaxLanguagesKey, @[ @"plaintext", @"json", @"javascript" ])) {
+    for (NSString *name in SCEDemoStringList(SCEDemoSyntaxLanguagesKey, @[ @"plaintext", @"json", @"javascript" ])) {
         NSNumber *language = identifiers[name.lowercaseString];
         if (!language) {
             NSLog(@"Ignoring unknown syntax language \"%@\"", name);
@@ -82,11 +82,11 @@ static NSString *SEDemoSyntaxLanguageName(SEDemoSyntaxLanguage language) {
     self.availableLanguages = languages;
 }
 
-- (NSArray<SEStatusBarItem> *)configuredStatusBarItems {
-    NSArray<SEStatusBarItem> *known =
-        @[ SEStatusBarItemLine, SEStatusBarItemColumn, SEStatusBarItemLineCount, SEStatusBarItemLanguage ];
-    NSMutableArray<SEStatusBarItem> *items = [NSMutableArray array];
-    for (NSString *name in SEDemoStringList(SEDemoStatusBarItemsKey, known)) {
+- (NSArray<SCEStatusBarItem> *)configuredStatusBarItems {
+    NSArray<SCEStatusBarItem> *known =
+        @[ SCEStatusBarItemLine, SCEStatusBarItemColumn, SCEStatusBarItemLineCount, SCEStatusBarItemLanguage ];
+    NSMutableArray<SCEStatusBarItem> *items = [NSMutableArray array];
+    for (NSString *name in SCEDemoStringList(SCEDemoStatusBarItemsKey, known)) {
         NSUInteger index = [known indexOfObjectPassingTest:^BOOL(NSString *item, NSUInteger idx, BOOL *stop) {
             return [item caseInsensitiveCompare:name] == NSOrderedSame;
         }];
@@ -103,63 +103,63 @@ static NSString *SEDemoSyntaxLanguageName(SEDemoSyntaxLanguage language) {
     [self loadConfiguration];
     [self createMenus];
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1000, 720)
-                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-        | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                                        NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
     self.window.title = @"SourceEditor";
     self.window.minSize = NSMakeSize(420, 300);
     self.window.delegate = self;
     self.window.releasedWhenClosed = NO;
-    NSScrollView *scroll = [SEEditorView scrollableEditorView];
+    NSScrollView *scroll = [SCEEditorView scrollableEditorView];
     scroll.automaticallyAdjustsContentInsets = NO;
-    self.editor = (SEEditorView *)scroll.documentView;
+    self.editor = (SCEEditorView *)scroll.documentView;
     self.editor.string = @"// SourceEditor · Objective-C + Core Text\n"
                           "// A native editing surface, packaged with SwiftPM.\n"
                           "\n"
                           "#import <AppKit/AppKit.h>\n"
                           "@import SourceEditor;\n"
                           "\n"
-                          "@interface WorkspaceController : NSViewController\n"
-                          "@property (nonatomic, strong) SEEditorView *editor;\n"
+                          "@interface SCEDocumentViewController : NSViewController\n"
+                          "@property (nonatomic, strong) SCEEditorView *editor;\n"
                           "@end\n"
                           "\n"
-                          "@implementation WorkspaceController\n"
+                          "@implementation SCEDocumentViewController\n"
                           "\n"
                           "- (void)loadView {\n"
-                          "    NSScrollView *scroll = [SEEditorView scrollableEditorView];\n"
-                          "    self.editor = (SEEditorView *)scroll.documentView;\n"
+                          "    NSScrollView *scroll = [SCEEditorView scrollableEditorView];\n"
+                          "    self.editor = (SCEEditorView *)scroll.documentView;\n"
                           "    self.editor.font = [NSFont monospacedSystemFontOfSize:12\n"
                           "                                                weight:NSFontWeightRegular];\n"
-                          "    self.editor.string = @\"Hello, native editor.\";\n"
+                          "    self.editor.string = @\"Document text.\";\n"
                           "    self.view = scroll;\n"
                           "}\n"
                           "\n"
                           "@end\n"
                           "\n"
-                          "// 输入法：可以直接在这里输入中文、日本語、한국어。\n"
-                          "// Graphemes: café  café  👨‍👩‍👧‍👦  🏳️‍🌈  👍🏽\n"
-                          "// Font fallback: ∑ λ → ≠ ≤ ≥ · Ελληνικά · العربية\n"
+                          "// Input methods: test composition and candidate placement here.\n"
+                          "// Grapheme boundaries: test combining marks and joined emoji sequences.\n"
+                          "// Font fallback: test characters outside the editor font's coverage.\n"
                           "// Tabs:\tcolumn one\tcolumn two\n"
                           "\n"
-                          "// Try typing, selecting, undo/redo and horizontal scrolling.\n";
+                          "// Test typing, selection, undo, redo, and horizontal scrolling.\n";
     NSView *content = self.window.contentView;
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
     [content addSubview:scroll];
-    self.statusBar = [[SEStatusBarView alloc] initWithFrame:NSZeroRect];
+    self.statusBar = [[SCEStatusBarView alloc] initWithFrame:NSZeroRect];
     self.statusBar.translatesAutoresizingMaskIntoConstraints = NO;
     NSMutableArray<NSString *> *languageTitles = [NSMutableArray array];
     for (NSNumber *language in self.availableLanguages) {
-        [languageTitles addObject:SEDemoSyntaxLanguageName(language.integerValue)];
+        [languageTitles addObject:SCEDemoSyntaxLanguageName(language.integerValue)];
     }
     self.statusBar.languageTitles = languageTitles;
     self.statusBar.items = [self configuredStatusBarItems];
-    __weak SEDemoDelegate *weakSelf = self;
+    __weak SCEDemoDelegate *weakSelf = self;
     self.statusBar.languageSelectionHandler = ^(NSUInteger index) {
         [weakSelf selectSyntaxLanguage:weakSelf.availableLanguages[index].integerValue];
     };
     [content addSubview:self.statusBar];
-    CGFloat statusBarInset = self.statusBar.hasVisibleItems ? SEStatusBarHeight : 0;
+    CGFloat statusBarInset = self.statusBar.hasVisibleItems ? SCEStatusBarHeight : 0;
     self.statusBar.hidden = !self.statusBar.hasVisibleItems;
     scroll.contentInsets = NSEdgeInsetsMake(0, 0, statusBarInset, 0);
     scroll.scrollerInsets = NSEdgeInsetsMake(0, 0, statusBarInset, 0);
@@ -171,19 +171,19 @@ static NSString *SEDemoSyntaxLanguageName(SEDemoSyntaxLanguage language) {
         [self.statusBar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [self.statusBar.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [self.statusBar.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-        [self.statusBar.heightAnchor constraintEqualToConstant:SEStatusBarHeight],
+        [self.statusBar.heightAnchor constraintEqualToConstant:SCEStatusBarHeight],
     ]];
     [NSNotificationCenter.defaultCenter addObserver:self
                                            selector:@selector(updateStatus:)
-                                               name:SEEditorTextDidChangeNotification
+                                               name:SCEEditorTextDidChangeNotification
                                              object:self.editor];
     [NSNotificationCenter.defaultCenter addObserver:self
                                            selector:@selector(updateStatus:)
-                                               name:SEEditorSelectionDidChangeNotification
+                                               name:SCEEditorSelectionDidChangeNotification
                                              object:self.editor];
-    SEDemoSyntaxLanguage initialLanguage = self.availableLanguages.count > 0
-        ? self.availableLanguages.firstObject.integerValue
-        : SEDemoSyntaxLanguagePlainText;
+    SCEDemoSyntaxLanguage initialLanguage = self.availableLanguages.count > 0
+                                                ? self.availableLanguages.firstObject.integerValue
+                                                : SCEDemoSyntaxLanguagePlainText;
     [self selectSyntaxLanguage:initialLanguage];
     [self updateStatus:nil];
     [self.window center];
@@ -193,7 +193,7 @@ static NSString *SEDemoSyntaxLanguageName(SEDemoSyntaxLanguage language) {
 }
 
 - (void)updateStatus:(NSNotification *)notification {
-    SETextBuffer *snapshot = self.editor.bufferSnapshot;
+    SCETextBuffer *snapshot = self.editor.bufferSnapshot;
     NSUInteger offset = self.editor.selectedRange.location;
     NSUInteger line = [snapshot lineIndexForUTF16Offset:offset];
     NSRange range = [snapshot UTF16RangeOfLine:line includingLineEnding:NO];
@@ -237,14 +237,14 @@ static NSString *SEDemoSyntaxLanguageName(SEDemoSyntaxLanguage language) {
     [self addItem:@"Decrease Font Size" action:@selector(decreaseFont:) key:@"-" toMenu:view].target = self;
     [self addItem:@"Toggle Line Numbers" action:@selector(toggleLineNumbers:) key:@"" toMenu:view].target = self;
     [self addItem:@"Toggle Scope Guide" action:@selector(toggleScopeGuide:) key:@"" toMenu:view].target = self;
-    // The menu only offers a choice; with zero or one language there is none.
+    // Display a syntax menu when multiple languages are available.
     if (self.availableLanguages.count > 1) {
         NSMenuItem *syntaxItem = [[NSMenuItem alloc] init];
         [main addItem:syntaxItem];
         self.syntaxMenu = [[NSMenu alloc] initWithTitle:@"Syntax"];
         syntaxItem.submenu = self.syntaxMenu;
         for (NSNumber *language in self.availableLanguages) {
-            NSMenuItem *item = [self addItem:SEDemoSyntaxLanguageName(language.integerValue)
+            NSMenuItem *item = [self addItem:SCEDemoSyntaxLanguageName(language.integerValue)
                                       action:@selector(changeSyntaxLanguage:)
                                          key:@""
                                       toMenu:self.syntaxMenu];
@@ -269,19 +269,19 @@ static NSString *SEDemoSyntaxLanguageName(SEDemoSyntaxLanguage language) {
     [self selectSyntaxLanguage:sender.tag];
 }
 
-- (void)selectSyntaxLanguage:(SEDemoSyntaxLanguage)syntaxLanguage {
+- (void)selectSyntaxLanguage:(SCEDemoSyntaxLanguage)syntaxLanguage {
     if (![self.availableLanguages containsObject:@(syntaxLanguage)]) {
-        syntaxLanguage = SEDemoSyntaxLanguagePlainText;
+        syntaxLanguage = SCEDemoSyntaxLanguagePlainText;
     }
-    SETreeSitterHighlighter *highlighter = nil;
-    if (syntaxLanguage != SEDemoSyntaxLanguagePlainText) {
+    SCETreeSitterHighlighter *highlighter = nil;
+    if (syntaxLanguage != SCEDemoSyntaxLanguagePlainText) {
         NSError *error = nil;
-        SETreeSitterLanguage language
-            = syntaxLanguage == SEDemoSyntaxLanguageJSON ? SETreeSitterLanguageJSON : SETreeSitterLanguageJavaScript;
-        highlighter = [[SETreeSitterHighlighter alloc] initWithLanguage:language error:&error];
+        SCETreeSitterLanguage language =
+            syntaxLanguage == SCEDemoSyntaxLanguageJSON ? SCETreeSitterLanguageJSON : SCETreeSitterLanguageJavaScript;
+        highlighter = [[SCETreeSitterHighlighter alloc] initWithLanguage:language error:&error];
         if (!highlighter) {
             NSLog(@"Could not load syntax highlighter: %@", error.localizedDescription);
-            syntaxLanguage = SEDemoSyntaxLanguagePlainText;
+            syntaxLanguage = SCEDemoSyntaxLanguagePlainText;
         }
     }
     self.editor.syntaxHighlighter = highlighter;
@@ -318,7 +318,7 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSApplication *application = NSApplication.sharedApplication;
         [application setActivationPolicy:NSApplicationActivationPolicyRegular];
-        SEDemoDelegate *delegate = [[SEDemoDelegate alloc] init];
+        SCEDemoDelegate *delegate = [[SCEDemoDelegate alloc] init];
         application.delegate = delegate;
         [application run];
         (void)delegate;

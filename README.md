@@ -1,10 +1,10 @@
 # SourceEditor
 
-一个以渲染质量、可预测的编辑开销和 macOS 原生输入为优先的代码编辑器组件。
+A macOS code editor component focused on text rendering, predictable editing costs, and native input handling.
 
-**Distributed as a Swift Package; the libraries, demo, and checks are implemented in Objective-C.** Only the required `Package.swift` manifest uses Swift. Supports macOS 14+; the core has no third-party dependencies or unsafe compiler flags. The optional Tree-sitter module downloads pinned C runtime and grammar sources during initialization, without a Swift wrapper or remote SwiftPM dependency.
+Distributed as a Swift package, with Objective-C libraries, a demo application, and automated checks. Only the required `Package.swift` manifest uses Swift. SourceEditor supports macOS 14 and later. The core has no third-party dependencies or unsafe compiler flags. The optional Tree-sitter module uses pinned C runtime and grammar sources downloaded during dependency setup, without a Swift wrapper or remote SwiftPM dependency.
 
-## 开始使用
+## Getting started
 
 ```sh
 ./script/bootstrap.sh
@@ -13,173 +13,169 @@ swift build
 ./script/test.sh
 ```
 
-`bootstrap.sh` requires Python 3 and curl. It downloads only missing dependencies,
-verifies their pinned SHA-256 checksums, and caches them outside Git. The demo and
-full test scripts initialize dependencies automatically and work offline once the
-sources are installed. See [Vendor/README.md](Vendor/README.md) for the manifest
-and cache behavior.
+`bootstrap.sh` requires Python 3 and curl. It downloads missing dependencies, verifies their pinned SHA-256 checksums, and caches them outside Git. The demo and full test scripts initialize dependencies automatically and work offline once the sources are installed. See [Vendor/README.md](Vendor/README.md) for dependency metadata and cache behavior.
 
-To build or check only the core from a fresh checkout without downloading anything:
+To build or check only the core from a fresh checkout without downloading dependencies:
 
 ```sh
 SOURCE_EDITOR_CORE_ONLY=1 swift build --target SourceEditor
 ./script/test.sh --core-only
 ```
 
-`SourceEditor` is the standalone editor library; `SourceEditorTreeSitter` is the optional highlighting library. The AppKit demo defaults to Plain Text. Use the language control in the bottom status bar or the **Syntax** menu to select Plain Text, JSON, or JavaScript without replacing the document or clearing Undo. The status bar uses an `NSVisualEffectView` over the scrolling editor, with separate views for the indicators and dividers. Scroll insets keep the last line and caret above it. If a highlighter cannot initialize, the demo falls back to Plain Text.
+`SourceEditor` is the standalone editor library; `SourceEditorTreeSitter` is the optional syntax highlighting library. The AppKit demo defaults to Plain Text. Use the language control in the status bar or the **Syntax** menu to select Plain Text, JSON, or JavaScript while preserving the document and undo history. The status bar uses an `NSVisualEffectView` over the scrolling editor, with separate indicator and separator views. Scroll insets keep the last line and caret above it. If a highlighter cannot initialize, the demo uses Plain Text.
 
-The status bar items and selectable languages are configurable. `SEStatusBarView.items` sets the items and their order (`line`, `column`, `lineCount`, `language`; the language item sits at the trailing edge). `languageTitles` is the only list the user can pick from. An empty list hides the language item, a single title shows a fixed label that can't be clicked, and two or more show a pop-up. When nothing is left to show, `hasVisibleItems` is `NO`; the demo then hides the bar and removes its scroll insets. The demo reads both settings from user defaults, so you can pass them at launch. Each takes a comma-separated string or an array, and an empty value means none:
+The status bar items and available languages are configurable. `SCEStatusBarView.items` sets the items and their order: `line`, `column`, `lineCount`, and `language`. The language item appears at the trailing edge. `languageTitles` defines the available choices. An empty list hides the language item, one title displays a fixed label, and two or more titles display a pop-up button. When no items are visible, `hasVisibleItems` returns `NO`; the demo hides the bar and removes its scroll insets.
+
+The demo reads both settings from user defaults. Each accepts a comma-separated string or an array; an empty value selects no items:
 
 ```sh
-open dist/SourceEditorDemo.app --args -SEStatusBarItems 'line,column,language' -SESyntaxLanguages 'json,javascript'
-open dist/SourceEditorDemo.app --args -SEStatusBarItems ''        # no status bar
-open dist/SourceEditorDemo.app --args -SESyntaxLanguages 'json'    # fixed to JSON
+open dist/SourceEditorDemo.app --args -SCEStatusBarItems 'line,column,language' -SCESyntaxLanguages 'json,javascript'
+open dist/SourceEditorDemo.app --args -SCEStatusBarItems ''      # Hide the status bar.
+open dist/SourceEditorDemo.app --args -SCESyntaxLanguages 'json' # Use a fixed JSON language label.
 ```
 
-The demo starts with the first listed language, and shows the **Syntax** menu only when there are at least two languages to choose from.
+The demo starts with the first listed language and displays the **Syntax** menu when at least two languages are available. Objective-C API names and demo launch keys use the `SCE` prefix. Integrations written against the earlier two-letter prefix must update their references.
 
-运行脚本在 `dist/` 中生成本地 `.app` 再启动，支持 `--verify`、`--debug`、`--logs` 和 `--telemetry`。Codex 的 Run 操作也指向同一脚本。
+`script/build_and_run.sh` builds an application bundle in `dist/` and launches it. It also supports `--verify`, `--debug`, `--logs`, and `--telemetry`. Use `./script/build_and_run.sh --preview` to launch a separate build with its own bundle path while preserving existing windows and their undo history.
 
-已有窗口中有编辑内容时，可用 `./script/build_and_run.sh --preview` 启动独立的新构建预览；它保留现有窗口及其撤销历史，每次预览也使用独立的 bundle 路径。
+The demo hosts the editor component and retains document content in memory. Closing the application discards that content. Host applications are responsible for file management and persistence.
 
-示例是组件宿主，内容只保留在内存中，关闭后不保存。文件管理应由宿主应用负责。
+## Coding conventions
 
-## 代码风格
+All project content, including code, documentation, comments, examples, and interface text, must use professional English unless another language is explicitly requested. Use precise editor development terminology throughout the project.
 
-Objective-C 源码、公开头文件、Demo 和检查程序以 [WebKit Code Style Guidelines](https://webkit.org/code-style-guidelines/) 为基础，使用 4 空格缩进。按本项目约定，方法／函数的左大括号放在签名同一行，方法体从下一行开始，方法之间保留空行。项目的 `.clang-format` 禁止单行函数、单行控制语句和单行 Block。
+Follow Apple's [Coding Guidelines for Cocoa](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/CodingGuidelines/CodingGuidelines.html) and [Objective-C conventions](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/Conventions/Conventions.html). Project-owned Objective-C types and related symbols use the three-letter `SCE` prefix, meaning Source Code Editor. [AGENTS.md](AGENTS.md) defines the complete contribution requirements, including naming, ownership, nullability, and validation.
 
-运行 `./script/format.sh` 统一格式，或运行 `./script/format.sh --check` 检查是否符合配置。脚本优先使用 PATH 中的 `clang-format`，也支持 Xcode 自带的版本。
+The repository's `.clang-format` defines formatting: four-space indentation, opening braces on the signature or control statement line, braces around control statement bodies, and separate lines for method, function, and block bodies. Run `./script/format.sh` to format Objective-C files or `./script/format.sh --check` to verify them. The script uses `clang-format` from `PATH` when available and otherwise checks the active Xcode toolchain.
 
-## 嵌入组件
+The Swift manifest uses the same indentation and line width through `.swift-format`. Format it with `xcrun swift-format format --in-place Package.swift` and verify it with `xcrun swift-format lint --strict Package.swift`.
 
-在使用该 Package 的 Objective-C target 中启用 Clang Modules，然后：
+## Embedding the editor
+
+Enable Clang modules in the host Objective-C target, then import the library:
 
 ```objc
 @import SourceEditor;
 
-NSScrollView *scroll = [SEEditorView scrollableEditorView];
-SEEditorView *editor = (SEEditorView *)scroll.documentView;
+NSScrollView *scrollView = [SCEEditorView scrollableEditorView];
+SCEEditorView *editor = (SCEEditorView *)scrollView.documentView;
 editor.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
-editor.string = @"// Hello, native editor.\n";
-self.view = scroll;
+editor.string = @"// Document text.\n";
+self.view = scrollView;
 ```
 
-也可直接创建 `SEEditorView`，作为自己的 `NSScrollView.documentView`。编辑器及其属性在主线程访问。
+You can also create an `SCEEditorView` directly and assign it to an `NSScrollView`'s `documentView`. Access the editor and its properties on the main thread.
 
-## 可选 JSON / JavaScript 高亮
+## Optional JSON and JavaScript highlighting
 
-宿主只依赖 `SourceEditor` product 时，不会编译或链接 Tree-sitter，编辑器默认 `syntaxHighlighter == nil`，完整的基础编辑体验继续工作。需要高亮时，再给宿主 target 添加 `SourceEditorTreeSitter` product：
+A host that depends only on the `SourceEditor` product does not compile or link Tree-sitter. The editor defaults to `syntaxHighlighter == nil` and supports plain text editing independently. To enable highlighting, add the `SourceEditorTreeSitter` product to the host target:
 
 ```objc
 @import SourceEditor;
 @import SourceEditorTreeSitter;
 
 NSError *error = nil;
-editor.syntaxHighlighter = [[SETreeSitterHighlighter alloc]
-    initWithLanguage:SETreeSitterLanguageJavaScript error:&error];
-// JSON 使用 SETreeSitterLanguageJSON。
+editor.syntaxHighlighter = [[SCETreeSitterHighlighter alloc]
+    initWithLanguage:SCETreeSitterLanguageJavaScript error:&error];
+// Use SCETreeSitterLanguageJSON for JSON documents.
 
-// 随时恢复纯文本；也会取消请求并清除已应用的高亮颜色。
+// Restore plain text editing, cancel pending requests, and clear syntax colors.
 editor.syntaxHighlighter = nil;
 ```
 
-初始化失败会返回 `nil` 和错误，宿主可继续使用纯文本编辑器。一个 provider 对应一个编辑器／文档；多个窗口分别创建实例。
+Initialization failures return `nil` and an error, allowing the host to continue with plain text editing. Create a separate highlighter instance for each editor and document.
 
-依赖方向只有 `SourceEditorTreeSitter → SourceEditor`。核心只定义 `SESyntaxHighlighter` 协议、`SESyntaxToken`、`SETextEdit` 和 `SESyntaxHighlightResult`，不包含 Tree-sitter 头文件、语法树类型、语言枚举或解析器生命周期。其他引擎实现同一个协议即可接入。
+Dependencies flow from `SourceEditorTreeSitter` to `SourceEditor`. The core defines the `SCESyntaxHighlighter` protocol, `SCESyntaxToken`, `SCETextEdit`, and `SCESyntaxHighlightResult`. Parser headers, syntax trees, language selection, and parser lifecycle management belong to the optional module. Other highlighting implementations can implement the same protocol.
 
-高亮处理过程：
+Highlighting follows these steps:
 
-1. 主线程提交 O(1) 的 Rope 快照、精确编辑描述和当前可见行前后各 6 行的查询范围。
-2. provider 在私有串行队列构建／增量更新语法树；首次解析扫描全文，后续使用 `ts_tree_edit` 和旧树复用结构。连续请求合并，过期解析可取消。
-3. 查询只返回与可见范围相交的 capture，保留跨行注释／模板字符串的完整文档范围；无需为整份文档构建 attributed text。
-4. 主线程校验文档 revision 和请求序号，丢弃过期结果。语义区间分配到行缓存，仅颜色实际变化的行重建 `CTLine`；其余行继续复用。
+1. The main thread submits an O(1) rope snapshot, an exact edit description, and a query range covering the visible lines plus six lines on either side.
+2. The highlighter builds or incrementally updates a syntax tree on a private serial queue. The initial parse reads the complete document; later parses use `ts_tree_edit` and reuse the previous tree. Consecutive requests are coalesced, and superseded parsing can be canceled.
+3. Queries return captures intersecting the requested range. Multiline comments and template strings retain their full document ranges. Highlighting does not require an attributed string for the complete document.
+4. The main thread checks the document revision and request sequence before applying a result. Semantic ranges are assigned to the line cache. Only lines whose colors change rebuild their `CTLine` objects.
 
-解析器通过 C 输入回调直接读取 Rope 的 UTF-16 LE 分块，不复制整份文本或转换整份 UTF-8。Tree-sitter 字节位置／列数是 UTF-16 单元数的两倍；分块边界会避开 surrogate pair 中间。快照携带文档标识，防止不同文档的相同 revision 错用旧树。
+The parser reads UTF-16 little-endian chunks directly from the rope through a C input callback. It does not copy the complete document or convert it to UTF-8. Tree-sitter byte offsets and columns are twice the corresponding UTF-16 code-unit counts. Chunk boundaries preserve surrogate pairs. Snapshots carry document identifiers so that independent documents with equal revisions cannot reuse each other's syntax trees.
 
-颜色属于编辑器的 `SESyntaxTheme`，解析模块只返回语义 token。换主题不会重新解析；缺少配置的 token 使用普通文字颜色。默认主题使用系统动态颜色，支持浅色／深色外观：
+`SCESyntaxTheme` controls editor colors; the parser returns semantic tokens. Changing the theme does not reparse the document. Unconfigured token kinds use the plain text color. The default theme uses dynamic system colors for light and dark appearances:
 
 ```objc
-editor.syntaxTheme = [[SESyntaxTheme alloc] initWithForegroundColors:@{
-    SESyntaxTokenKeyword : NSColor.systemPurpleColor,
-    SESyntaxTokenString : NSColor.systemRedColor,
-    SESyntaxTokenComment : NSColor.secondaryLabelColor,
+editor.syntaxTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{
+    SCESyntaxTokenKeyword : NSColor.systemPurpleColor,
+    SCESyntaxTokenString : NSColor.systemRedColor,
+    SCESyntaxTokenComment : NSColor.secondaryLabelColor,
 }];
 ```
 
-目前提供 JSON key／字符串／转义／数字／常量，以及 JavaScript 关键字、函数、类、属性、注释、正则和模板插值。查询文件位于 `Sources/SourceEditorTreeSitter/Queries`，使用结构 capture，不依赖未实现的 query predicate 或语言服务。
+The supplied queries cover JSON keys, strings, escapes, numbers, and constants, along with JavaScript keywords, functions, classes, properties, comments, regular expressions, and template interpolation. Query files are in `Sources/SourceEditorTreeSitter/Queries`. They use structural captures without requiring query predicates or language services.
 
-Pinned versions, archive checksums, and extraction paths are recorded in `Vendor/versions.json`; licenses are preserved in the downloaded sources and `Vendor/THIRD_PARTY_NOTICES.txt`.
+Pinned versions, archive checksums, and extraction paths are recorded in `Vendor/versions.json`. Licenses remain in the downloaded sources and `Vendor/THIRD_PARTY_NOTICES.txt`. SwiftPM embeds the query resource bundle in host applications. The demo build script also copies that bundle and the third-party notices into `.app/Contents/Resources`. Hosts distributing binaries manually must include both resources.
 
-SwiftPM 会给宿主应用嵌入查询 resource bundle；本项目运行脚本也会将它和第三方声明复制到 `.app/Contents/Resources`。手工分发二进制的宿主应同样携带这两个资源。
+## Architecture
 
-## 架构取舍
+SourceEditor uses AppKit for native interaction and Core Text for font layout, fallback, and drawing. The component manages text storage, viewport geometry, interaction, and invalidation. Storage, visible-line geometry, and layout caching have separate responsibilities, with undo and input-method handling integrated into editing transactions. End-to-end performance still requires measurement.
 
-采用 **AppKit + Core Text**。Core Text 负责系统字体排版、字体回退和文字绘制；组件负责文本存储、可见区域、交互和失效管理。选择它是为了掌握这些边界，性能是否接近 Zed / Sublime 仍需后续实测。
-
-第一版就将存储、可见行几何和排版缓存分离，并把 Undo 与输入法放入最小闭环。这样可以在基础交互正确的前提下继续优化。
-
-| 模块 | 职责 | 当前实现 |
+| Component | Responsibility | Implementation |
 | --- | --- | --- |
-| `SETextBuffer` | UTF-16 存储、行索引、独立快照 | 不可变节点的 AVL Rope，叶块最多 4096 个 UTF-16 单元；子树汇总长度和换行数 |
-| `SEViewport` | 可见行范围 | 固定行高，根据滚动区域计算可见行及前后各 6 行；独立于 Core Text |
-| `SELineLayoutCache` | 排版、命中测试、选区几何 | 按行按需创建 `CTLine`；局部编辑只失效相交行，后续行的缓存随行号平移 |
-| `SEEditorView` | AppKit 交互与组合 | `NSTextInputClient`、标准编辑命令、Undo、鼠标选区、滚动协调 |
-| `SESyntaxHighlighter` / `SESyntaxTheme` | 可替换的高亮协议／呈现策略 | 语义 UTF-16 区间、异步版本校验、颜色与解析分离 |
-| `SourceEditorTreeSitter`（可选） | JSON / JavaScript 解析与查询 | 固定 C grammar、后台增量语法树、viewport capture 查询 |
+| `SCETextBuffer` | UTF-16 storage, line indexing, independent snapshots | AVL rope with immutable nodes, leaves of at most 4,096 UTF-16 code units, and subtree length and line-feed counts |
+| `SCEViewport` | Visible-line ranges | Fixed line height; visible lines plus six context lines on either side; independent of Core Text |
+| `SCELineLayoutCache` | Layout, hit testing, selection geometry | Creates `CTLine` objects on demand; invalidates intersecting lines and shifts subsequent cache entries after edits |
+| `SCEEditorView` | AppKit interaction and component integration | `NSTextInputClient`, standard editing commands, undo, mouse selection, and scrolling |
+| `SCESyntaxHighlighter` and `SCESyntaxTheme` | Highlighting interface and presentation | Semantic UTF-16 ranges, asynchronous revision checks, and separate parsing and color configuration |
+| `SourceEditorTreeSitter` | Optional JSON and JavaScript parsing | Pinned C grammars, incremental background parsing, and viewport capture queries |
 
-编辑不会构造整个文件的 `NSAttributedString`。行定位沿树查找，读取和替换只访问相交的块；快照共享不可变节点，复制本身为 O(1)。读取 `editor.string` / `buffer.string` 则会显式物化整份文档，为 O(N)，不应放进逐键回调中。
+Edits access intersecting rope chunks without constructing an `NSAttributedString` for the complete document. Line lookup traverses the tree. Snapshots share immutable nodes, making copies O(1). Reading `editor.string` or `buffer.string` materializes the complete document in O(N) time; avoid these reads in per-keystroke callbacks.
 
-文字和选区分别绘制在**可见窗口大小**的 backing layer 上，光标使用独立 `CALayer`。文档视图可以很高，绘制表面始终只有一个 viewport 大小。移动选区和光标闪烁不失效 `CTLine`。
+Text and selection use separate backing layers sized to the viewport. The caret uses an independent `CALayer`. The document view can be much taller than its drawing surfaces. Moving the selection or blinking the caret does not invalidate line layouts.
 
-选区先求各行视觉区段与行尾扩展的并集，消除内部边，再沿完整轮廓将外凸角和跨行内凹衔接都处理成连续曲率圆角。每个转折由两段三次贝塞尔曲线组成：与直边相接处曲率为零，两段曲线中点的一阶、二阶导数一致。默认圆角尺度为 4 pt，短边自动收缩。
+Selection rendering forms the union of visual line spans and line-ending extensions, removes internal edges, and rounds the exposed contour. Convex corners and concave joins between lines use pairs of cubic Bezier curves with continuous curvature. The endpoints meet straight edges at zero curvature; the paired curves have matching first and second derivatives at their midpoint. The default corner radius is 4 points and contracts along short edges.
 
-整个选区路径只抗锯齿填充一次，内部没有矩形接缝。几何计算按可见行的水平区段进行，不分配文档大小的像素网格；视口上下各带一行轮廓上下文，避免裁剪边缘出现假的圆角。双向文本中真正未选中的间隔、孔洞和分离区段会保留。
+The selection path is filled once with antialiasing to avoid internal seams. Geometry is computed from horizontal spans of visible lines without allocating a bitmap the size of the document. One context line above and below the viewport prevents artificial rounded corners at clipping edges. Unselected gaps, enclosed gaps, and disconnected spans in bidirectional text remain distinct.
 
-当前缓存以逻辑行号寻址，并在每次编辑时根据旧行范围和行数差同时调整布局与语义样式，正确性依赖所有编辑经过视图的事务入口。字体、Tab 宽度和外观变化清空布局缓存；语义样式仍可复用。高亮结果用 revision／请求序号校验，按行比较实际样式，不以全局 revision 作为所有 `CTLine` 的失效键。
+Caches use logical line indices. Every edit adjusts both layouts and semantic styles using the previous line range and the change in line count. All edits must pass through the view's transaction methods. Font, tab-width, and appearance changes clear layout caches while preserving reusable semantic styles. Highlight results are checked by revision and request sequence, then compared by line style; the global revision does not invalidate every `CTLine`.
 
-## 首版已实现
+## Supported editing features
 
-- Core Text 绘制、系统等宽字体、字体回退、系统浅色／深色适配。
-- 双向滚动、固定行号、当前行底色、独立光标闪烁。
-- 括号作用域引导线：光标所在的最内层跨行 `()`／`[]`／`{}` 内，在起始行的缩进处画一条竖线，只覆盖括号之间的行（`showsScopeGuide`，默认开启）。
-- 输入、删除、Tab、继承前导缩进的换行、剪切／复制／粘贴、Undo/Redo。
-- 鼠标拖选、双击选词、三击／点行号选行、越界拖选自动滚动。
-- 字素边界移动与删除，避免拆开 Emoji、ZWJ 序列和组合字符；CRLF 作为一个编辑边界。
-- 方向键、Shift 选区、Option 词移动、Command 行首／行尾／文档边界、翻页。
-- 输入法标记文字、提交、取消、屏幕坐标查询；一次组合输入合并为一个撤销事务。
-- 只读开关、文本／选区通知、基础 Accessibility 文本与选区接口。
-- 可选 JSON／JavaScript 语法高亮、独立主题、后台增量解析与 viewport 查询。
+- Core Text rendering, system monospaced fonts, font fallback, and light and dark appearances.
+- Horizontal and vertical scrolling, fixed line numbers, current-line highlighting, and independent caret blinking.
+- A scope guide at the opening line's indentation for the innermost multiline `()`, `[]`, or `{}` pair enclosing the caret. The guide covers the lines between the brackets. `showsScopeGuide` defaults to `YES`.
+- Text insertion and deletion, tabs, newlines that inherit leading indentation, cut, copy, paste, undo, and redo.
+- Mouse drag selection, double-click word selection, triple-click or gutter line selection, and selection autoscrolling.
+- Grapheme-boundary movement and deletion that preserve emoji, zero-width joiner sequences, and combining marks. CRLF is treated as one editing boundary.
+- Arrow-key movement, Shift selection, Option word movement, Command line and document navigation, and page movement.
+- Input-method marked text, commit, cancellation, and screen-coordinate queries. Each composition produces one undo transaction.
+- Read-only mode, text and selection notifications, and basic accessibility text and selection interfaces.
+- Optional JSON and JavaScript syntax highlighting, independent themes, background incremental parsing, and viewport queries.
 
-所有公开位置和 `NSRange` **都按 UTF-16 单元计数**，不是 UTF-8 字节或可见字符数。行号从 0 开始；LF 和 CRLF 原样保留；末尾换行产生最后一个空行。可选适配器内部负责 Tree-sitter 字节坐标的转换。
+All public positions and `NSRange` values count UTF-16 code units. Line indices start at zero. LF and CRLF are preserved, and a trailing newline adds an empty final line. The optional parser adapter converts these coordinates to Tree-sitter byte positions.
 
-## 验证
+## Validation
 
-`script/test.sh` 运行纯 Objective-C 的 `SourceEditorChecks` 和 `SourceEditorTreeSitterChecks`。`script/test.sh --core-only` 只构建／运行不链接 Tree-sitter 的核心检查。这里使用 executable checks，因为 SwiftPM 的 XCTest 发现机制不能直接运行 Objective-C 测试用例；运行 `swift test` 不会执行这些检查。
+`script/test.sh` runs the Objective-C `SourceEditorChecks` and `SourceEditorTreeSitterChecks` executables. `script/test.sh --core-only` builds and runs the core checks without linking Tree-sitter. SwiftPM does not directly discover these Objective-C check cases, so `swift test` does not execute them.
 
-检查包括：
+The existing checks cover:
 
-- 12,000 次随机替换，与 `NSMutableString` 对照；另外连续插入 3,000 次验证增长路径；检查行索引、范围读取和快照独立性。
-- Emoji／组合字符／CRLF 删除、Undo/Redo、纵向移动的目标列保持、自动缩进及只读模式。
-- 标记文字更新、替换选区、提交／取消、整次组合输入的 Undo/Redo、输入法范围与屏幕坐标往返。
-- 作用域引导线：与独立的栈匹配参考实现做随机对照（含跨读取分块和扫描上限）、编辑后跟随、像素位置与覆盖行数。
-- Core Text 字素边界命中、Tab 前进、未变行缓存复用、选区变化不重排。
-- 十万行文档的可见行缓存范围、局部编辑失效范围、滚动和文档缩短后的绘制表面大小。
-- 输出十万行缓冲区的构建与随机插入／删除耗时；这是 **Debug 的存储层微基准**，不代表按键到屏幕显示的端到端延迟。
-- 注入替代高亮器、实际 Core Text 颜色、未变样式的缓存复用、过期结果丢弃、移除 provider、主题切换不解析、CRLF／UTF-16 编辑坐标。
-- JSON 和 JavaScript 各 120 次随机 Unicode／换行编辑，将增量结果逐次与全量解析对比；覆盖不完整的中间语法状态。
-- 模板嵌套、正则、Emoji 横跨输入块、两万行文档的范围查询、滚动不重解析、跨行 capture、文档身份、请求合并和取消。
+- 12,000 randomized replacements compared with `NSMutableString`, followed by 3,000 insertions to exercise buffer growth, line indexing, range reads, and snapshot independence.
+- Emoji, combining marks, CRLF deletion, undo and redo, preferred-column vertical movement, indentation, and read-only mode.
+- Marked-text updates, selection replacement, commit, cancellation, composition undo and redo, input ranges, and screen-coordinate queries.
+- Scope-guide matching against an independent stack-based reference, randomized bracket sequences across chunk boundaries and scan limits, changes after edits, and rendered position and line coverage.
+- Core Text grapheme hit testing, tab advances, unchanged-line cache reuse, and selection changes without layout reconstruction.
+- Visible-line cache bounds, local invalidation, scrolling, and drawing-surface sizing after shortening a 100,000-line document.
+- Storage construction and random insertion and deletion timings for a 100,000-line buffer. These Debug storage measurements do not establish end-to-end input latency.
+- Substitute highlighters, Core Text colors, unchanged-style cache reuse, stale-result rejection, highlighter removal, theme changes without parsing, and CRLF and UTF-16 edit coordinates.
+- 120 randomized Unicode and newline edits for each supported language, comparing incremental and complete parses after every edit, including incomplete syntax.
+- Nested templates, regular expressions, emoji at input chunk boundaries, range queries in a 20,000-line document, parse reuse during scrolling, multiline captures, document identity, request coalescing, and cancellation.
 
-已启动示例检查实际文字绘制、原生快捷键撤销／重做、Unicode 粘贴和横向滚动。协议检查不代替真实输入法测试，中文／日文候选窗定位和连续组合输入仍需逐项手测。
+Protocol checks do not establish real input-method behavior. Candidate-window placement and continuous composition with Chinese and Japanese input methods require manual testing. Visual rendering, native shortcuts, Unicode paste, and horizontal scrolling also require application-level review when affected by a change.
 
-## 明确的边界与后续顺序
+## Limitations and planned work
 
-1. **先补输入与性能证据。** 用真实拼音／日文输入法检查候选窗、选区替换与取消；用 Instruments 测输入和滚动帧时间，记录输入到呈现的 p50/p95。普通连续键入目前按每次插入记录 Undo，后续增加符合原生习惯的合并；大粘贴撤销历史还需要按内存预算淘汰。
-2. **超长行分段排版。** 当前可见逻辑行仍整体生成一个 `CTLine`，百万字符单行会阻塞主线程；字素导航和选区几何也按整行处理。需要带 shaping 上下文的分段、横向可见范围索引和明确预算，不能仅把字符串硬切成独立 glyph 段。当前横向滚动宽度随已访问行增长，局部删除后可能保留较宽滚动范围。
-3. **软折行。** 当前为不折行代码布局；换行输入已支持。增加软折行时引入视觉行／高度索引和宽度版本，替换固定行高的逻辑行几何。还需完善混合双向文本的视觉方向移动、光标 affinity 与精细选区；当前系统 shaping 不等于完整的双向编辑行为。
-4. **语言服务。** 现有可选高亮协议可继续扩展其他解析器或语言，再考虑诊断、补全、LSP 和多光标。
+1. **Input and performance validation.** Test candidate-window placement, selection replacement, and cancellation with real Chinese Pinyin and Japanese input methods. Use Instruments to measure input and scrolling frame times and record median and 95th-percentile input-to-display latency. Ordinary typing currently records one undo operation per insertion; native typing coalescing and a memory budget for large paste history remain planned.
+2. **Long-line layout.** Each visible logical line currently creates one complete `CTLine`. A line containing a million characters can block the main thread. Grapheme navigation and selection geometry also process complete lines. Segmented layout needs shaping context, a horizontal visibility index, and explicit processing limits. Horizontal scroll width grows with visited lines and can remain wider than necessary after local deletions.
+3. **Soft wrapping and bidirectional editing.** Layout currently uses unwrapped logical lines. Soft wrapping requires visual-line and height indices plus width-aware invalidation. Mixed-direction visual movement, caret affinity, and detailed selection behavior also need further work beyond system text shaping.
+4. **Language services.** Extend the optional highlighting interface for additional parsers and languages before adding diagnostics, completion, Language Server Protocol support, or multiple carets.
 
-作用域引导线按字符匹配括号，字符串和注释里的括号同样计数；为限定每次移动光标的开销，从光标起向两侧各最多扫描 131,072 个 UTF-16 单元，超出时不显示。后续可改用语法树判定。
+Scope guides match bracket characters, including those in strings and comments. Each caret movement scans at most 131,072 UTF-16 code units in either direction. Brackets beyond that limit do not produce a guide. Syntax-tree-based matching remains a possible extension.
 
-独立 CR 换行、矩形选区、代码折叠、LSP、完整 VoiceOver 参数化导航暂未实现。高亮目前是结构语法高亮，不做作用域绑定或跨语言注入。适配器受 Tree-sitter 32 位字节坐标约束；超出范围、单次查询超过 20,000 个 capture 或查询匹配预算时，该范围回退纯文本。以上边界不影响继续完善当前组件，但首版还不能宣称达到成熟编辑器的性能或交互覆盖率。
+Standalone CR line endings, rectangular selection, code folding, language services, and complete VoiceOver parameterized navigation are not implemented. Highlighting uses syntax structure without scope binding or embedded-language parsing. Tree-sitter uses 32-bit byte coordinates. Unsupported document sizes, more than 20,000 captures in one query, or queries exceeding the match limit produce plain text for the requested range. Performance and interaction coverage require further validation before comparison with established editors.
 
-参考：[Core Text 命中测试](https://developer.apple.com/documentation/coretext/ctlinegetstringindexforposition(_:_:))、[NSTextInputClient](https://developer.apple.com/documentation/appkit/nstextinputclient?language=objc)、[SwiftPM PackageDescription](https://docs.swift.org/package-manager/PackageDescription/PackageDescription.html)。
+References: [Core Text hit testing](https://developer.apple.com/documentation/coretext/ctlinegetstringindexforposition(_:_:)), [NSTextInputClient](https://developer.apple.com/documentation/appkit/nstextinputclient?language=objc), and [SwiftPM PackageDescription](https://docs.swift.org/package-manager/PackageDescription/PackageDescription.html).
