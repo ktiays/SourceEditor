@@ -205,6 +205,27 @@ NSUInteger SCECheckSyntaxCore(void) {
         SCESyntaxTokenComment : NSColor.blueColor,
     }];
     SYNTAX_CHECK(highlighter.requests.count == requestCount, "theme changes must not reparse text");
+    SCESyntaxTheme *editorTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{}
+                                                                      editorColors:@{
+                                                                          SCEEditorColorText : NSColor.greenColor,
+                                                                          SCEEditorColorBackground : NSColor.blackColor
+                                                                      }];
+    SYNTAX_CHECK([editorTheme editorColorForKey:SCEEditorColorBackground] == NSColor.blackColor &&
+                     [editorTheme editorColorForKey:SCEEditorColorCaret] == nil,
+                 "a theme must report only the editor colors it sets");
+    editor.syntaxTheme = editorTheme;
+    NSColor *green = [NSColor.greenColor colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    SYNTAX_CHECK([editorCache.textColor isEqual:green], "a theme's text color must reach plain text");
+    NSTextInsertionIndicator *caret = [editor valueForKey:@"caretIndicator"];
+    SYNTAX_CHECK([caret.color isEqual:NSColor.controlAccentColor], "the caret must follow the accent color by default");
+    editor.syntaxTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{}
+                                                             editorColors:@{SCEEditorColorCaret : NSColor.orangeColor}];
+    SYNTAX_CHECK([caret.color isEqual:NSColor.orangeColor], "a theme's caret color must override the accent color");
+    editor.syntaxTheme = editorTheme;
+    editor.syntaxTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{
+        SCESyntaxTokenComment : NSColor.blueColor,
+    }];
+    SYNTAX_CHECK(![editorCache.textColor isEqual:green], "removing a theme's text color must restore the default");
     editor.syntaxHighlighter = nil;
     SYNTAX_CHECK(highlighter.cancellations == 1, "detaching a highlighter must cancel its work");
     SCEDeliverHighlight(latest, @[ comment ]);

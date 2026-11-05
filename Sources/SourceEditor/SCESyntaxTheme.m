@@ -1,5 +1,18 @@
 #import "include/SCESyntaxTheme.h"
 
+SCEEditorColorKey const SCEEditorColorBackground = @"background";
+SCEEditorColorKey const SCEEditorColorText = @"text";
+SCEEditorColorKey const SCEEditorColorGutterBackground = @"gutterBackground";
+SCEEditorColorKey const SCEEditorColorLineNumber = @"lineNumber";
+SCEEditorColorKey const SCEEditorColorCurrentLine = @"currentLine";
+SCEEditorColorKey const SCEEditorColorSelection = @"selection";
+SCEEditorColorKey const SCEEditorColorInactiveSelection = @"inactiveSelection";
+SCEEditorColorKey const SCEEditorColorCaret = @"caret";
+SCEEditorColorKey const SCEEditorColorScopeGuide = @"scopeGuide";
+SCEEditorColorKey const SCEEditorColorSearchMatch = @"searchMatch";
+SCEEditorColorKey const SCEEditorColorCurrentSearchMatch = @"currentSearchMatch";
+SCEEditorColorKey const SCEEditorColorCurrentSearchMatchBorder = @"currentSearchMatchBorder";
+
 @implementation SCESyntaxTheme
 
 + (instancetype)defaultTheme {
@@ -24,10 +37,20 @@
 }
 
 - (instancetype)initWithForegroundColors:(NSDictionary<SCESyntaxTokenKind, NSColor *> *)colors {
+    return [self initWithForegroundColors:colors editorColors:@{}];
+}
+
+- (instancetype)initWithForegroundColors:(NSDictionary<SCESyntaxTokenKind, NSColor *> *)colors
+                            editorColors:(NSDictionary<SCEEditorColorKey, NSColor *> *)editorColors {
     if ((self = [super init])) {
         _foregroundColors = [colors copy];
+        _editorColors = [editorColors copy];
     }
     return self;
+}
+
+- (NSColor *)editorColorForKey:(SCEEditorColorKey)key {
+    return _editorColors[key];
 }
 
 - (NSColor *)foregroundColorForKind:(SCESyntaxTokenKind)kind {

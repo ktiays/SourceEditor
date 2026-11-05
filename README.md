@@ -124,6 +124,20 @@ editor.syntaxTheme = [[SCESyntaxTheme alloc] initWithForegroundColors:@{
 }];
 ```
 
+Use `initWithForegroundColors:editorColors:` to configure the text and gutter backgrounds, plain text, line numbers, current-line highlight, active and inactive selections, caret, scope guide, and search highlights. Omitted editor colors use system defaults. If only the active selection color is set, the inactive selection uses that color at half its opacity.
+
+```objc
+editor.syntaxTheme = [[SCESyntaxTheme alloc]
+    initWithForegroundColors:SCESyntaxTheme.defaultTheme.foregroundColors
+                editorColors:@{
+                    SCEEditorColorBackground : NSColor.blackColor,
+                    SCEEditorColorText : NSColor.whiteColor,
+                    SCEEditorColorCaret : NSColor.systemOrangeColor,
+                }];
+```
+
+Translucent text or gutter backgrounds allow content behind the editor to show through. To expose that content through an enclosing scroll view, set `scrollView.drawsBackground = NO`.
+
 The supplied query covers JSON keys, strings, escapes, numbers, constants, comments, and punctuation. Query files are in `Sources/SourceEditorTreeSitter/Queries`. They use structural captures without requiring query predicates or language services.
 
 Licenses remain in the resolved package sources and `THIRD_PARTY_NOTICES.txt`. SwiftPM embeds the query resource bundle in host applications. The demo build script also copies that bundle and the third-party notices into `.app/Contents/Resources`. Hosts distributing binaries manually must include both resources.

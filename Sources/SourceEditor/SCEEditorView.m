@@ -64,6 +64,8 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 
 @interface SCEEditorView (SurfaceDrawing)
 - (void)drawTextSurface:(NSView *)surface;
+/// Whether the background fills every pixel, so that views behind it need not draw.
+@property (nonatomic, readonly) BOOL hasOpaqueBackground;
 
 - (void)drawBackgroundSurface:(NSView *)surface;
 @end
@@ -82,7 +84,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (BOOL)isOpaque {
-    return !self.drawsText;
+    return !self.drawsText && self.editor.hasOpaqueBackground;
 }
 
 - (BOOL)isAccessibilityElement {
@@ -326,9 +328,10 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
-        self->_layoutCache.textColor = [NSColor.textColor colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+        self->_layoutCache.textColor = [[self themeColor:SCEEditorColorText fallback:NSColor.textColor]
+            colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
         self->_layoutCache.appearance = self.effectiveAppearance;
-        self->_caretIndicator.color = NSColor.controlAccentColor;
+        self->_caretIndicator.color = [self themeColor:SCEEditorColorCaret fallback:NSColor.controlAccentColor];
     }];
     [CATransaction commit];
     _backgroundSurface.needsDisplay = YES;
@@ -481,7 +484,37 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 - (void)setSyntaxTheme:(SCESyntaxTheme *)syntaxTheme {
     _syntaxTheme = [syntaxTheme copy] ?: SCESyntaxTheme.defaultTheme;
     _layoutCache.syntaxTheme = _syntaxTheme;
+    [self updateAppearance];
     [self updateViewport];
+}
+
+- (NSColor *)themeColor:(SCEEditorColorKey)key fallback:(NSColor *)fallback {
+    return [_syntaxTheme editorColorForKey:key] ?: fallback;
+}
+
+- (NSColor *)activeSelectionColor {
+    return [self themeColor:SCEEditorColorSelection fallback:NSColor.selectedTextBackgroundColor];
+}
+
+- (NSColor *)inactiveSelectionColor {
+    NSColor *color = [_syntaxTheme editorColorForKey:SCEEditorColorInactiveSelection];
+    if (color) {
+        return color;
+    }
+    NSColor *selection = [_syntaxTheme editorColorForKey:SCEEditorColorSelection];
+    return selection ? [selection colorWithAlphaComponent:selection.alphaComponent * 0.5]
+                     : NSColor.unemphasizedSelectedTextBackgroundColor;
+}
+
+- (BOOL)hasOpaqueBackground {
+    // A translucent text or gutter background shows what is behind the editor.
+    NSColor *background = [_syntaxTheme editorColorForKey:SCEEditorColorBackground];
+    NSColor *gutter = [_syntaxTheme editorColorForKey:SCEEditorColorGutterBackground];
+    return (!background || background.alphaComponent >= 1) && (!gutter || gutter.alphaComponent >= 1);
+}
+
+- (NSColor *)themeBackgroundColor {
+    return [self themeColor:SCEEditorColorBackground fallback:NSColor.textBackgroundColor];
 }
 
 - (void)requestSyntaxHighlightingForLines:(NSRange)lines edit:(SCETextEdit *)edit {
@@ -671,7 +704,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     if (NSIsEmptyRect(guide)) {
         return;
     }
-    [NSColor.tertiaryLabelColor setFill];
+    [[self themeColor:SCEEditorColorScopeGuide fallback:NSColor.tertiaryLabelColor] setFill];
     NSRectFillUsingOperation(guide, NSCompositingOperationSourceOver);
 }
 
@@ -850,7 +883,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
             NSRange overlap = NSIntersectionRange(lineRange, _markedRange);
             if (overlap.length) {
                 NSRange local = NSMakeRange(overlap.location - lineRange.location, overlap.length);
-                [NSColor.textColor setFill];
+                [_layoutCache.textColor setFill];
                 for (NSValue *value in [layout selectionRectsForUTF16Range:local height:_lineHeight]) {
                     NSRect rect = value.rectValue;
                     NSRectFill(NSMakeRect(originX + rect.origin.x, baseline + 2, rect.size.width, 1));
@@ -862,7 +895,8 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     if (_showsLineNumbers) {
         NSDictionary *attrs = @{
             NSFontAttributeName : _lineNumberFont,
-            NSForegroundColorAttributeName : NSColor.secondaryLabelColor,
+            NSForegroundColorAttributeName : [self themeColor:SCEEditorColorLineNumber
+                                                     fallback:NSColor.secondaryLabelColor],
         };
         for (NSUInteger i = visible.location; i < NSMaxRange(visible); i++) {
             NSAttributedString *number =
@@ -879,10 +913,11 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
 }
 
 - (void)drawBackgroundSurface:(NSView *)surface {
-    [NSColor.textBackgroundColor setFill];
+    NSColor *background = self.themeBackgroundColor;
+    [background setFill];
     NSRectFill(surface.bounds);
     if (_showsLineNumbers) {
-        [NSColor.windowBackgroundColor setFill];
+        [[self themeColor:SCEEditorColorGutterBackground fallback:NSColor.windowBackgroundColor] setFill];
         NSRectFill(NSMakeRect(0, 0, self.gutterWidth, NSHeight(surface.bounds)));
     }
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
@@ -892,8 +927,11 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
         NSUInteger line = [_buffer lineIndexForUTF16Offset:_head];
         NSRect rect = NSMakeRect(SCEHighlightHorizontalPadding, SCEInset + line * _lineHeight - NSMinY(_viewportRect),
                                  MAX(0, NSWidth(surface.bounds) - 2 * SCEHighlightHorizontalPadding), _lineHeight);
-        // One opaque fill keeps the highlight uniform across the gutter and text.
-        [[NSColor.textBackgroundColor blendedColorWithFraction:0.035 ofColor:NSColor.labelColor] setFill];
+        // One fill keeps the highlight uniform across the gutter and text.
+        NSColor *highlight = [self themeColor:SCEEditorColorCurrentLine
+                                     fallback:[background blendedColorWithFraction:0.035
+                                                                           ofColor:_layoutCache.textColor]];
+        [highlight setFill];
         CGPathRef path = SCECreateSelectionPath(@[ [NSValue valueWithRect:rect] ], SCECurrentLineCornerRadius);
         CGContextSetShouldAntialias(context, YES);
         CGContextAddPath(context, path);
@@ -905,7 +943,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
             NSMakeRect(self.gutterWidth, 0, rightEdge - self.gutterWidth, NSHeight(surface.bounds));
         CGContextClipToRect(context, selectionBounds);
         BOOL active = self.window.isKeyWindow && self.window.firstResponder == self;
-        [(active ? NSColor.selectedTextBackgroundColor : NSColor.unemphasizedSelectedTextBackgroundColor) setFill];
+        [(active ? self.activeSelectionColor : self.inactiveSelectionColor) setFill];
         NSMutableArray<NSValue *> *selectionRects = [NSMutableArray array];
         CGFloat cornerRadius = MIN(4, _lineHeight * 0.2);
         NSRect geometryBounds = NSInsetRect(selectionBounds, -cornerRadius * 3, -_lineHeight * 2);
@@ -1164,9 +1202,12 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
         return;
     }
     NSUInteger currentIndex = self.currentSearchMatchIndex;
-    NSColor *matchColor = [NSColor.systemYellowColor colorWithAlphaComponent:0.28];
-    NSColor *currentColor = [NSColor.findHighlightColor colorWithAlphaComponent:0.6];
-    NSColor *currentBorderColor = NSColor.systemYellowColor;
+    NSColor *matchColor = [self themeColor:SCEEditorColorSearchMatch
+                                  fallback:[NSColor.systemYellowColor colorWithAlphaComponent:0.28]];
+    NSColor *currentColor = [self themeColor:SCEEditorColorCurrentSearchMatch
+                                    fallback:[NSColor.findHighlightColor colorWithAlphaComponent:0.6]];
+    NSColor *currentBorderColor = [self themeColor:SCEEditorColorCurrentSearchMatchBorder
+                                          fallback:NSColor.systemYellowColor];
     CGFloat lineEndingWidth = ceil(_font.pointSize * 0.5);
     CGFloat originX = self.textOriginX - NSMinX(_viewportRect);
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
