@@ -113,6 +113,8 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     self.editor = (SCEEditorView *)scroll.documentView;
     self.editor.string = @"// SourceEditor · Objective-C + Core Text\n"
                           "// A native editing surface, packaged with SwiftPM.\n"
+                          "// Command-click documentation: https://developer.apple.com/documentation/appkit/\n"
+                          "// Right-click a selection for editing commands.\n"
                           "\n"
                           "#import <AppKit/AppKit.h>\n"
                           "@import SourceEditor;\n"

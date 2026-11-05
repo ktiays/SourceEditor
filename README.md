@@ -65,6 +65,32 @@ self.view = scrollView;
 
 You can also create an `SCEEditorView` directly and assign it to an `NSScrollView`'s `documentView`. Access the editor and its properties on the main thread.
 
+## Context menus and web links
+
+Right-click or Control-click opens an editing menu with Cut, Copy, and Paste. A click inside the selection preserves it; a click outside selects the pointed-to word, or places the caret in empty space. Commands target the clicked editor and use its selection, editability, and the system pasteboard to determine availability. Copy remains available in read-only and non-focusable editors. Undo, Redo, Delete, and Select All are not in the context menu; they remain available through the main menu and their key equivalents, and Delete removes only the selection as one undoable edit.
+
+Assign an object conforming to `SCEEditorViewDelegate` to `editor.delegate` to customize each menu. The delegate is weak, so the host must retain it. The callback runs on the main thread after establishing the context-click selection. Modify and return the supplied menu, return a replacement `NSMenu`, or return `nil` to suppress the menu:
+
+```objc
+// In the host's SCEEditorViewDelegate implementation:
+- (NSMenu *)editorView:(SCEEditorView *)editorView
+                  menu:(NSMenu *)menu
+              forEvent:(NSEvent *)event {
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *item = [menu addItemWithTitle:@"Inspect Selection"
+                                      action:@selector(inspectSelection:)
+                               keyEquivalent:@""];
+    item.target = self; // The host implements inspectSelection:.
+    return menu;
+}
+```
+
+Each request starts with a fresh menu. Set the inherited `editor.menu` property to provide a custom starting menu; the editor copies it before invoking the delegate, preserving the host's template. Custom items keep their specified targets and use AppKit's normal menu validation.
+
+`automaticLinkDetectionEnabled` defaults to `YES`. Foundation's data detector recognizes HTTP and HTTPS URLs, including supported addresses without an explicit scheme. Hold Command while hovering over a link to underline it and show a pointing-hand cursor. Command-click opens the link through `NSWorkspace` in the default browser while preserving the selection, including in read-only and non-focusable editors. Ordinary clicks continue to select text. Dragging, releasing Command before mouse-up, or editing the document cancels a pending link click.
+
+Use `URLAtPoint:effectiveRange:` to query the URL and its UTF-16 range at a visible point in the editor's document coordinates. Detection caches only the pointed-to logical line, and edits invalidate that cache. The gutter, empty space, email addresses, and non-web URL schemes do not activate browser links. Links do not span logical lines. Detection and Core Text layout both process a complete logical line, so unusually long lines retain the limitation described below.
+
 ## Find and incremental search
 
 `SCETextSearchQuery` describes a search with `SCETextSearchOptions`: case-sensitive matching, whole words, and ICU regular expressions. Searches ignore case by default. Whole-word matching treats letters, combining marks, numbers, and the underscore as word characters, like double-click word selection. In regular expressions, `^` and `$` match at line boundaries. Empty matches are skipped, and match ranges count UTF-16 code units.
@@ -172,6 +198,8 @@ Caches use logical line indices. Every edit adjusts both layouts and semantic st
 - A scope guide at the opening line's indentation for the innermost multiline `()`, `[]`, or `{}` pair enclosing the caret. The guide covers the lines between the brackets. `showsScopeGuide` defaults to `YES`.
 - Text insertion and deletion, tabs, newlines that inherit leading indentation, cut, copy, paste, undo, and redo.
 - Mouse drag selection, double-click word selection, triple-click or gutter line selection, and selection autoscrolling.
+- Native context menus with validated editing commands and delegate customization.
+- HTTP and HTTPS link recognition, Command-hover underlines, and Command-click browser opening.
 - Grapheme-boundary movement and deletion that preserve emoji, zero-width joiner sequences, and combining marks. CRLF is treated as one editing boundary.
 - Arrow-key movement, Shift selection, Option word movement, Command line and document navigation, and page movement.
 - Input-method marked text, commit, cancellation, and screen-coordinate queries. Each composition produces one undo transaction.
@@ -194,6 +222,8 @@ The existing checks cover:
 - Marked-text updates, selection replacement, commit, cancellation, composition undo and redo, input ranges, and screen-coordinate queries.
 - Scope-guide matching against an independent stack-based reference, randomized bracket sequences across chunk boundaries and scan limits, changes after edits, and rendered position and line coverage.
 - Core Text grapheme hit testing, tab advances, unchanged-line cache reuse, and selection changes without layout reconstruction.
+- Context-menu contents and action routing, selection preservation, undoable deletion, read-only validation, non-focusable behavior, delegate modification, replacement, suppression, and custom menu templates.
+- URL detection with UTF-16 offsets and CRLF, punctuation boundaries, web-scheme filtering, glyph hit testing, underline pixels, layout reuse, read-only opening requests, and click cancellation. Browser requests are intercepted during automated checks.
 - Visible-line cache bounds, local invalidation, scrolling, and drawing-surface sizing after shortening a 100,000-line document.
 - Storage construction and random insertion and deletion timings for a 100,000-line buffer. These Debug storage measurements do not establish end-to-end input latency.
 - Search options, line anchors, UTF-16 match ranges, invalid patterns, and match limits; background results, wrapping navigation, synchronous navigation during pending searches, match movement after edits, and highlight pixels confined to matching lines.

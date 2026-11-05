@@ -6,6 +6,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class SCEEditorView;
+
+@protocol SCEEditorViewDelegate <NSObject>
+@optional
+/// Called on the main thread after the context-click selection is established.
+/// Modify and return menu, return a replacement, or return nil to suppress it.
+/// Menu items supplied by the editor target that editor directly.
+- (nullable NSMenu *)editorView:(SCEEditorView *)editorView menu:(NSMenu *)menu forEvent:(NSEvent *)event;
+@end
+
 FOUNDATION_EXPORT NSNotificationName const SCEEditorTextDidChangeNotification;
 FOUNDATION_EXPORT NSNotificationName const SCEEditorSelectionDidChangeNotification;
 FOUNDATION_EXPORT NSNotificationName const SCEEditorSyntaxHighlightingDidUpdateNotification;
@@ -42,6 +52,21 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 @property (nonatomic) NSUInteger tabWidth;
 @property (nonatomic, getter=isAutomaticIndentationEnabled) BOOL automaticIndentationEnabled;
 @property (nonatomic, readonly) NSUInteger lineCount;
+
+/// Customizes each context menu. The editor does not retain its delegate.
+/// An assigned NSView.menu is copied as the starting menu; otherwise the editor
+/// supplies Cut, Copy, and Paste.
+@property (nonatomic, weak, nullable) id<SCEEditorViewDelegate> delegate;
+/// Recognizes HTTP and HTTPS links with Foundation's data detector. Defaults to
+/// YES. Command-hover underlines a link; Command-click opens it in the default
+/// browser without changing the selection. Available in read-only views too.
+@property (nonatomic, getter=isAutomaticLinkDetectionEnabled) BOOL automaticLinkDetectionEnabled;
+
+/// Returns the HTTP or HTTPS URL under point in the editor's document coordinates.
+/// Only visible text is hit-tested; the gutter and empty space never match.
+/// The optional range receives the link's UTF-16 range, or {NSNotFound, 0}.
+/// Detection examines and caches one logical line, without reading self.string.
+- (nullable NSURL *)URLAtPoint:(NSPoint)point effectiveRange:(nullable NSRangePointer)effectiveRange;
 
 /// The default is nil, which enables plain text editing without a highlighter.
 /// Use a separate highlighter instance for each editor and document.
@@ -89,6 +114,9 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 - (void)cut:(nullable id)sender;
 
 - (void)paste:(nullable id)sender;
+
+/// Deletes the selection as one undoable edit. Does nothing at an empty caret.
+- (void)delete:(nullable id)sender;
 
 - (void)selectAll:(nullable id)sender;
 

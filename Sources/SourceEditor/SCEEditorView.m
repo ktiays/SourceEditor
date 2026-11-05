@@ -156,6 +156,17 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     SCETextSearchRequest *_searchRequest;
     NSUInteger _searchRequestID;
     BOOL _searchUpdateScheduled;
+    NSTrackingArea *_linkTrackingArea;
+    id _modifierFlagsMonitor;
+    NSDataDetector *_linkDetector;
+    NSArray<NSTextCheckingResult *> *_detectedLineLinks;
+    NSUInteger _detectedLinkLine;
+    NSUInteger _detectedLinkRevision;
+    NSRange _hoveredLinkRange;
+    BOOL _handlingLinkClick;
+    NSURL *_pressedLinkURL;
+    NSRange _pressedLinkRange;
+    NSUInteger _pressedLinkRevision;
 }
 
 + (NSScrollView *)scrollableEditorView {
@@ -195,6 +206,8 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     _scopeGuideBrackets = NSMakeRange(NSNotFound, 0);
     _scopeGuideX = NAN;
     _automaticIndentationEnabled = YES;
+    _automaticLinkDetectionEnabled = YES;
+    _hoveredLinkRange = NSMakeRange(NSNotFound, 0);
     _tabWidth = 4;
     _preferredX = NAN;
     _markedRange = NSMakeRange(NSNotFound, 0);
@@ -232,6 +245,9 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (void)dealloc {
+    if (_modifierFlagsMonitor) {
+        [NSEvent removeMonitor:_modifierFlagsMonitor];
+    }
     if ([_syntaxHighlighter respondsToSelector:@selector(cancelPendingRequests)]) {
         [_syntaxHighlighter cancelPendingRequests];
     }
@@ -384,6 +400,13 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
+    if (_modifierFlagsMonitor) {
+        [NSEvent removeMonitor:_modifierFlagsMonitor];
+        _modifierFlagsMonitor = nil;
+    }
+    [self setHoveredLinkRange:NSMakeRange(NSNotFound, 0)];
+    _handlingLinkClick = NO;
+    _pressedLinkURL = nil;
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     if (_windowKeyObserver) {
         [center removeObserver:_windowKeyObserver];
@@ -397,6 +420,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
         __weak SCEEditorView *weakSelf = self;
         void (^update)(NSNotification *) = ^(NSNotification *note) {
             [weakSelf selectionDidChange];
+            [weakSelf updateLinkHoverForCurrentPointer];
         };
         _windowKeyObserver = [center addObserverForName:NSWindowDidBecomeKeyNotification
                                                  object:self.window
@@ -406,6 +430,21 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
                                                     object:self.window
                                                      queue:nil
                                                 usingBlock:update];
+        // Modifier events go to the first responder. A local monitor also keeps
+        // hover feedback current when another view has focus, without consuming
+        // events or observing input outside this application.
+        _modifierFlagsMonitor = [NSEvent
+            addLocalMonitorForEventsMatchingMask:NSEventMaskFlagsChanged
+                                         handler:^NSEvent *(NSEvent *event) {
+                                             SCEEditorView *editor = weakSelf;
+                                             if (editor.window.isKeyWindow) {
+                                                 [editor
+                                                     updateLinkHoverAtWindowPoint:editor.window
+                                                                                      .mouseLocationOutsideOfEventStream
+                                                                    modifierFlags:event.modifierFlags];
+                                             }
+                                             return event;
+                                         }];
     }
     [self updateViewport];
 }
@@ -462,6 +501,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     [_textInputContext invalidateCharacterCoordinates];
     [self.window invalidateCursorRectsForView:self];
     _updatingViewport = NO;
+    [self updateLinkHoverForCurrentPointer];
     SCETextEdit *edit = _pendingSyntaxEdit;
     _pendingSyntaxEdit = nil;
     [self requestSyntaxHighlightingForLines:lines edit:edit];
@@ -566,6 +606,23 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 
 - (void)resetCursorRects {
     [self addCursorRect:self.visibleRect cursor:NSCursor.IBeamCursor];
+    if (_hoveredLinkRange.location == NSNotFound) {
+        return;
+    }
+    NSUInteger line = [_buffer lineIndexForUTF16Offset:_hoveredLinkRange.location];
+    NSRange content = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
+    NSRange local = NSMakeRange(_hoveredLinkRange.location - content.location, _hoveredLinkRange.length);
+    SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
+    NSRect textRect = NSIntersectionRect(
+        self.visibleRect, NSMakeRect(NSMinX(_viewportRect) + self.gutterWidth, NSMinY(_viewportRect),
+                                     MAX(0, NSWidth(_viewportRect) - self.gutterWidth), NSHeight(_viewportRect)));
+    for (NSValue *value in [layout selectionRectsForUTF16Range:local height:_lineHeight]) {
+        NSRect rect = NSOffsetRect(value.rectValue, self.textOriginX, SCEInset + line * _lineHeight);
+        rect = NSIntersectionRect(rect, textRect);
+        if (!NSIsEmptyRect(rect)) {
+            [self addCursorRect:rect cursor:NSCursor.pointingHandCursor];
+        }
+    }
 }
 
 - (NSString *)string {
@@ -573,6 +630,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (void)setString:(NSString *)string {
+    [self invalidateDetectedLinks];
     SCETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
     _markedRange = NSMakeRange(NSNotFound, 0);
     _compositionOriginalText = nil;
@@ -878,6 +936,18 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
         CGFloat y = SCEInset + i * _lineHeight - NSMinY(_viewportRect);
         CGFloat baseline = round((y + _baseline) * scale) / scale;
         SCEDrawCTLine(context, layout.line, originX, baseline);
+        if (_hoveredLinkRange.location != NSNotFound) {
+            NSRange lineRange = [_buffer UTF16RangeOfLine:i includingLineEnding:NO];
+            NSRange overlap = NSIntersectionRange(lineRange, _hoveredLinkRange);
+            if (overlap.length) {
+                NSRange local = NSMakeRange(overlap.location - lineRange.location, overlap.length);
+                [_layoutCache.textColor setFill];
+                for (NSValue *value in [layout selectionRectsForUTF16Range:local height:_lineHeight]) {
+                    NSRect rect = value.rectValue;
+                    NSRectFill(NSMakeRect(originX + rect.origin.x, baseline + 2, rect.size.width, 1));
+                }
+            }
+        }
         if ([self hasMarkedText]) {
             NSRange lineRange = [_buffer UTF16RangeOfLine:i includingLineEnding:NO];
             NSRange overlap = NSIntersectionRange(lineRange, _markedRange);
@@ -1294,6 +1364,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     }
     // Rope snapshots share storage, so capturing the pre-edit buffer is constant time.
     SCETextBuffer *before = [_buffer copy];
+    [self invalidateDetectedLinks];
     [_buffer replaceCharactersInUTF16Range:range withString:text];
     if (_syntaxHighlighter) {
         _pendingSyntaxEdit = [[SCETextEdit alloc] initWithRange:range
@@ -1517,6 +1588,13 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
     if (_editable && text) {
         [self insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
+    }
+}
+
+- (void)delete:(id)sender {
+    if (_editable && self.selectedRange.length) {
+        [self finishComposition];
+        [self deleteRange:self.selectedRange];
     }
 }
 
@@ -1911,9 +1989,223 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
                                                 : NSMakeRange(_head, [self lineBoundary:YES] - _head)];
 }
 
+// MARK: Context menus
+
+- (NSMenu *)defaultContextMenu {
+    // The context menu offers only clipboard commands. Undo, Redo, Delete, and
+    // Select All remain available through the main menu and key equivalents.
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+    [menu addItemWithTitle:NSLocalizedString(@"Cut", nil) action:@selector(cut:) keyEquivalent:@""];
+    [menu addItemWithTitle:NSLocalizedString(@"Copy", nil) action:@selector(copy:) keyEquivalent:@""];
+    [menu addItemWithTitle:NSLocalizedString(@"Paste", nil) action:@selector(paste:) keyEquivalent:@""];
+    for (NSMenuItem *item in menu.itemArray) {
+        // Explicit targets keep commands attached to this editor even when
+        // it is non-focusable or another view becomes the first responder.
+        item.target = self;
+    }
+    return menu;
+}
+
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    if (_focusable) {
+        [self.window makeFirstResponder:self];
+    }
+    [self finishComposition];
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    if (![self isDocumentPoint:point inTextRange:self.selectedRange]) {
+        NSUInteger offset = [self UTF16OffsetForDocumentPoint:point];
+        NSRange range = [self wordRangeAtOffset:offset];
+        if (![self isDocumentPoint:point inTextRange:range] ||
+            (range.length && SCECharacterClass([_buffer substringWithUTF16Range:range], 0) == 0)) {
+            range = NSMakeRange(offset, 0);
+        }
+        [self setAnchor:range.location head:NSMaxRange(range) scroll:NO preserveX:NO];
+    }
+    NSMenu *menu = self.menu ? [self.menu copy] : [self defaultContextMenu];
+    if ([_delegate respondsToSelector:@selector(editorView:menu:forEvent:)]) {
+        return [_delegate editorView:self menu:menu forEvent:event];
+    }
+    return menu;
+}
+
+// MARK: Link recognition and hover feedback
+
+- (BOOL)isDocumentPoint:(NSPoint)point inTextRange:(NSRange)range {
+    if (!range.length || !NSPointInRect(point, self.visibleRect) ||
+        point.x < NSMinX(_viewportRect) + self.gutterWidth || point.y < SCEInset ||
+        point.y >= SCEInset + _buffer.lineCount * _lineHeight) {
+        return NO;
+    }
+    NSUInteger line = (NSUInteger)floor((point.y - SCEInset) / _lineHeight);
+    NSRange content = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
+    NSRange overlap = NSIntersectionRange(content, range);
+    SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
+    NSPoint localPoint = NSMakePoint(point.x - self.textOriginX, point.y - SCEInset - line * _lineHeight);
+    NSRange wholeLine = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
+    NSRange lineOverlap = NSIntersectionRange(wholeLine, range);
+    if (lineOverlap.length && NSMaxRange(lineOverlap) > NSMaxRange(content) &&
+        localPoint.x >= [layout xForUTF16Index:content.length]) {
+        return YES;
+    }
+    if (!overlap.length) {
+        return NO;
+    }
+    NSRange local = NSMakeRange(overlap.location - content.location, overlap.length);
+    for (NSValue *value in [layout selectionRectsForUTF16Range:local height:_lineHeight]) {
+        if (NSPointInRect(localPoint, value.rectValue)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (NSURL *)URLAtPoint:(NSPoint)point effectiveRange:(NSRangePointer)effectiveRange {
+    if (effectiveRange) {
+        *effectiveRange = NSMakeRange(NSNotFound, 0);
+    }
+    if (!_automaticLinkDetectionEnabled || !NSPointInRect(point, self.visibleRect) ||
+        point.x < NSMinX(_viewportRect) + self.gutterWidth || point.y < SCEInset ||
+        point.y >= SCEInset + _buffer.lineCount * _lineHeight) {
+        return nil;
+    }
+    NSUInteger line = (NSUInteger)floor((point.y - SCEInset) / _lineHeight);
+    NSRange content = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
+    if (!_detectedLineLinks || _detectedLinkLine != line || _detectedLinkRevision != _buffer.revision) {
+        if (!_linkDetector) {
+            _linkDetector = [NSDataDetector dataDetectorWithTypes:NSTextCheckingTypeLink error:NULL];
+        }
+        NSString *text = [_buffer substringWithUTF16Range:content];
+        _detectedLineLinks = [_linkDetector matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+        _detectedLinkLine = line;
+        _detectedLinkRevision = _buffer.revision;
+    }
+    for (NSTextCheckingResult *match in _detectedLineLinks) {
+        NSString *scheme = match.URL.scheme.lowercaseString;
+        if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+            continue;
+        }
+        NSRange range = NSMakeRange(content.location + match.range.location, match.range.length);
+        if ([self isDocumentPoint:point inTextRange:range]) {
+            if (effectiveRange) {
+                *effectiveRange = range;
+            }
+            return match.URL;
+        }
+    }
+    return nil;
+}
+
+- (void)setAutomaticLinkDetectionEnabled:(BOOL)enabled {
+    _automaticLinkDetectionEnabled = enabled;
+    [self invalidateDetectedLinks];
+    [self updateLinkHoverForCurrentPointer];
+}
+
+- (void)invalidateDetectedLinks {
+    _detectedLineLinks = nil;
+    _pressedLinkURL = nil;
+    [self setHoveredLinkRange:NSMakeRange(NSNotFound, 0)];
+}
+
+- (void)setHoveredLinkRange:(NSRange)range {
+    if (NSEqualRanges(range, _hoveredLinkRange)) {
+        return;
+    }
+    _hoveredLinkRange = range;
+    _textSurface.needsDisplay = YES;
+    [self.window invalidateCursorRectsForView:self];
+}
+
+- (void)updateLinkHoverAtWindowPoint:(NSPoint)windowPoint modifierFlags:(NSEventModifierFlags)modifierFlags {
+    NSPoint point = [self convertPoint:windowPoint fromView:nil];
+    NSView *contentView = self.window.contentView;
+    // NSView hit testing takes a point in the receiver's superview coordinates.
+    NSView *hitView = [contentView hitTest:[contentView.superview convertPoint:windowPoint fromView:nil]];
+    BOOL inside = NSPointInRect(point, self.visibleRect) && (!contentView || hitView == self);
+    NSRange range = NSMakeRange(NSNotFound, 0);
+    if (inside && (modifierFlags & NSEventModifierFlagCommand) && !(modifierFlags & NSEventModifierFlagControl) &&
+        !_lastDragEvent && !_handlingLinkClick) {
+        [self URLAtPoint:point effectiveRange:&range];
+    }
+    [self setHoveredLinkRange:range];
+    if (inside) {
+        [(range.location == NSNotFound ? NSCursor.IBeamCursor : NSCursor.pointingHandCursor) set];
+    }
+}
+
+// Returns the modifier keys held now. Tracking events such as mouse-entered and
+// cursor-update events do not carry reliable device-independent modifier flags,
+// so hover feedback for those events reads the current state instead.
+- (NSEventModifierFlags)currentModifierFlags {
+    return NSEvent.modifierFlags;
+}
+
+- (void)updateLinkHoverForCurrentPointer {
+    if (self.window.isKeyWindow) {
+        [self updateLinkHoverAtWindowPoint:self.window.mouseLocationOutsideOfEventStream
+                             modifierFlags:self.currentModifierFlags];
+    } else {
+        [self setHoveredLinkRange:NSMakeRange(NSNotFound, 0)];
+    }
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (!_linkTrackingArea) {
+        _linkTrackingArea = [[NSTrackingArea alloc]
+            initWithRect:NSZeroRect
+                 options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingCursorUpdate |
+                         NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+                   owner:self
+                userInfo:nil];
+        [self addTrackingArea:_linkTrackingArea];
+    }
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    [self updateLinkHoverAtWindowPoint:event.locationInWindow modifierFlags:self.currentModifierFlags];
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    [self updateLinkHoverAtWindowPoint:event.locationInWindow modifierFlags:event.modifierFlags];
+}
+
+// Changing the hovered link invalidates cursor rectangles, which makes AppKit send
+// cursor-update events. Their modifier flags can omit Command while it is held,
+// so using them would clear the underline immediately after mouseMoved: sets it.
+- (void)cursorUpdate:(NSEvent *)event {
+    [self updateLinkHoverAtWindowPoint:event.locationInWindow modifierFlags:self.currentModifierFlags];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    [self setHoveredLinkRange:NSMakeRange(NSNotFound, 0)];
+}
+
+- (void)openDetectedURL:(NSURL *)URL {
+    [NSWorkspace.sharedWorkspace openURL:URL];
+}
+
 // MARK: Pointer selection
 
 - (void)mouseDown:(NSEvent *)event {
+    if (event.modifierFlags & NSEventModifierFlagControl) {
+        NSMenu *menu = [self menuForEvent:event];
+        if (menu) {
+            [NSMenu popUpContextMenu:menu withEvent:event forView:self];
+        }
+        return;
+    }
+    _handlingLinkClick = NO;
+    _pressedLinkURL = nil;
+    if ((event.modifierFlags & NSEventModifierFlagCommand) && event.clickCount == 1) {
+        _pressedLinkURL = [self URLAtPoint:[self convertPoint:event.locationInWindow fromView:nil]
+                            effectiveRange:&_pressedLinkRange];
+        if (_pressedLinkURL) {
+            _handlingLinkClick = YES;
+            _pressedLinkRevision = _buffer.revision;
+            return;
+        }
+    }
     // A non-focusable editor selects text without taking focus from the current first responder.
     if (_focusable) {
         [self.window makeFirstResponder:self];
@@ -1957,6 +2249,11 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    if (_handlingLinkClick) {
+        _pressedLinkURL = nil;
+        return;
+    }
+    [self setHoveredLinkRange:NSMakeRange(NSNotFound, 0)];
     _lastDragEvent = event;
     [self updateDragWithEvent:event];
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
@@ -1982,6 +2279,21 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
     [_autoscrollTimer invalidate];
     _autoscrollTimer = nil;
     _lastDragEvent = nil;
+    if (_handlingLinkClick) {
+        NSURL *pressedURL = _pressedLinkURL;
+        _handlingLinkClick = NO;
+        _pressedLinkURL = nil;
+        if (pressedURL && _pressedLinkRevision == _buffer.revision &&
+            (event.modifierFlags & NSEventModifierFlagCommand) && !(event.modifierFlags & NSEventModifierFlagControl)) {
+            NSRange range;
+            NSURL *URL = [self URLAtPoint:[self convertPoint:event.locationInWindow fromView:nil]
+                           effectiveRange:&range];
+            if ([URL isEqual:pressedURL] && NSEqualRanges(range, _pressedLinkRange)) {
+                [self openDetectedURL:URL];
+            }
+        }
+    }
+    [self updateLinkHoverAtWindowPoint:event.locationInWindow modifierFlags:event.modifierFlags];
 }
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
@@ -1995,12 +2307,15 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
     if (action == @selector(copy:)) {
         return self.selectedRange.length > 0;
     }
-    if (action == @selector(cut:)) {
+    if (action == @selector(cut:) || action == @selector(delete:)) {
         return _editable && self.selectedRange.length > 0;
     }
     if (action == @selector(paste:)) {
         return _editable &&
                [NSPasteboard.generalPasteboard canReadItemWithDataConformingToTypes:@[ NSPasteboardTypeString ]];
+    }
+    if (action == @selector(selectAll:)) {
+        return _buffer.lengthUTF16 > 0;
     }
     return YES;
 }
