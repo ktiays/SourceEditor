@@ -16,4 +16,14 @@ FOUNDATION_EXPORT const NSUInteger SCEBracketScopeDefaultScanLimit;
 FOUNDATION_EXPORT NSRange SCEEnclosingMultilineBracketRange(SCETextBuffer *buffer, NSUInteger offset,
                                                             NSUInteger scanLimit);
 
+/// Finds the innermost multiline (), [] or {} pair that encloses all of
+/// `range`: its opening bracket lies before range.location and its closing
+/// bracket lies at or after NSMaxRange(range). A selected bracket therefore
+/// belongs to the selection, not to an enclosing pair. An empty range behaves
+/// like SCEEnclosingMultilineBracketRange at range.location. The scan reads at
+/// most `scanLimit` UTF-16 code units before the range, and the range plus at
+/// most `scanLimit` code units after it.
+FOUNDATION_EXPORT NSRange SCEEnclosingMultilineBracketRangeForRange(SCETextBuffer *buffer, NSRange range,
+                                                                    NSUInteger scanLimit);
+
 NS_ASSUME_NONNULL_END

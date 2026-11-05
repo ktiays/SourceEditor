@@ -20,6 +20,8 @@ static const CGFloat SCEHighlightHorizontalPadding = 8;
 static const CGFloat SCECurrentLineCornerRadius = 6;
 static const CGFloat SCELineNumberFontSizeRatio = 0.9;
 static const CGFloat SCEScopeGuideWidth = 1;
+// The distance, in points, over which each end of the scope guide fades in.
+static const CGFloat SCEScopeGuideFadeLength = 6;
 static const CGFloat SCESearchMatchCornerRadius = 3;
 
 // Returns the index of the first range whose location is at least offset.
@@ -146,7 +148,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     NSUInteger _scopeGuideOpenLine;
     NSUInteger _scopeGuideCloseLine;
     NSUInteger _scopeGuideRevision;
-    NSUInteger _scopeGuideHead;
+    NSRange _scopeGuideSelection;
     BOOL _hasScopeGuideState;
     CGFloat _scopeGuideX;
     // Search matches are packed NSRange values in document order. Edits move or
@@ -707,16 +709,21 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (void)updateScopeGuide {
-    if (_hasScopeGuideState && _scopeGuideRevision == _buffer.revision && _scopeGuideHead == _head) {
+    NSRange selection = self.selectedRange;
+    if (_hasScopeGuideState && _scopeGuideRevision == _buffer.revision &&
+        NSEqualRanges(_scopeGuideSelection, selection)) {
         return;
     }
     _hasScopeGuideState = YES;
     _scopeGuideRevision = _buffer.revision;
-    _scopeGuideHead = _head;
+    _scopeGuideSelection = selection;
     _scopeGuideX = NAN;
-    _scopeGuideBrackets = _showsScopeGuide && _focusable
-                              ? SCEEnclosingMultilineBracketRange(_buffer, _head, SCEBracketScopeDefaultScanLimit)
-                              : NSMakeRange(NSNotFound, 0);
+    // Like Xcode, a selection shows only the innermost pair that encloses all of
+    // it; an empty selection shows the innermost pair around the caret.
+    _scopeGuideBrackets =
+        _showsScopeGuide && _focusable
+            ? SCEEnclosingMultilineBracketRangeForRange(_buffer, selection, SCEBracketScopeDefaultScanLimit)
+            : NSMakeRange(NSNotFound, 0);
     if (_scopeGuideBrackets.location != NSNotFound) {
         _scopeGuideOpenLine = [_buffer lineIndexForUTF16Offset:_scopeGuideBrackets.location];
         _scopeGuideCloseLine = [_buffer lineIndexForUTF16Offset:NSMaxRange(_scopeGuideBrackets) - 1];
@@ -754,16 +761,31 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     }
     CGFloat x = round((self.textOriginX + self.scopeGuideX - NSMinX(_viewportRect)) * scale) / scale;
     CGFloat width = MAX(1 / scale, round(SCEScopeGuideWidth * scale) / scale);
-    NSRect guide = NSMakeRect(x, MAX(top, -1), width, MIN(bottom, NSHeight(surface.bounds) + 1) - MAX(top, -1));
-    // The pinned gutter covers the guide when scrolled horizontally.
-    guide =
+    // The gradient spans the whole guide, so its ends fade only at the bracket
+    // lines and not where the viewport or the pinned gutter clips the guide.
+    NSRect guide = NSMakeRect(x, top, width, bottom - top);
+    NSRect visible =
         NSIntersectionRect(guide, NSMakeRect(self.gutterWidth, -1, MAX(0, NSWidth(surface.bounds) - self.gutterWidth),
                                              NSHeight(surface.bounds) + 2));
-    if (NSIsEmptyRect(guide)) {
+    if (NSIsEmptyRect(visible)) {
         return;
     }
-    [[self themeColor:SCEEditorColorScopeGuide fallback:NSColor.tertiaryLabelColor] setFill];
-    NSRectFillUsingOperation(guide, NSCompositingOperationSourceOver);
+    // Converting in the drawing pass resolves dynamic colors for the current appearance.
+    NSColor *color = [[self themeColor:SCEEditorColorScopeGuide
+                              fallback:NSColor.tertiaryLabelColor] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!color) {
+        return;
+    }
+    CGFloat fade = MIN(SCEScopeGuideFadeLength, NSHeight(guide) / 3) / NSHeight(guide);
+    NSColor *clear = [color colorWithAlphaComponent:0];
+    CGFloat locations[] = {0, fade, 1 - fade, 1};
+    NSGradient *gradient = [[NSGradient alloc] initWithColors:@[ clear, color, color, clear ]
+                                                  atLocations:locations
+                                                   colorSpace:NSColorSpace.sRGBColorSpace];
+    [NSGraphicsContext saveGraphicsState];
+    NSRectClip(visible);
+    [gradient drawInRect:guide angle:90];
+    [NSGraphicsContext restoreGraphicsState];
 }
 
 - (void)setFocusable:(BOOL)focusable {

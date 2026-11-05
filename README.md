@@ -195,7 +195,7 @@ Caches use logical line indices. Every edit adjusts both layouts and semantic st
 
 - Core Text rendering, system monospaced fonts, font fallback, and light and dark appearances.
 - Horizontal and vertical scrolling, fixed line numbers, current-line highlighting, and independent caret blinking.
-- A scope guide at the opening line's indentation for the innermost multiline `()`, `[]`, or `{}` pair enclosing the caret. The guide covers the lines between the brackets. `showsScopeGuide` defaults to `YES`.
+- A scope guide at the opening line's indentation for the innermost multiline `()`, `[]`, or `{}` pair that encloses the whole selection, or the caret when nothing is selected. As in Xcode, a selection shows one guide; selected brackets belong to the selection, so selecting a block's brackets moves the guide to the enclosing pair. The guide covers the lines between the brackets and fades in and out over 6 points at each end. `showsScopeGuide` defaults to `YES`.
 - Text insertion and deletion, tabs, newlines that inherit leading indentation, cut, copy, paste, undo, and redo.
 - Mouse drag selection, double-click word selection, triple-click or gutter line selection, and selection autoscrolling.
 - Native context menus with validated editing commands and delegate customization.
@@ -240,7 +240,7 @@ Protocol checks do not establish real input-method behavior. Candidate-window pl
 3. **Soft wrapping and bidirectional editing.** Layout currently uses unwrapped logical lines. Soft wrapping requires visual-line and height indices plus width-aware invalidation. Mixed-direction visual movement, caret affinity, and detailed selection behavior also need further work beyond system text shaping.
 4. **Language services.** Extend the optional highlighting interface for additional parsers and languages before adding diagnostics, completion, Language Server Protocol support, or multiple carets.
 
-Scope guides match bracket characters, including those in strings and comments. Each caret movement scans at most 131,072 UTF-16 code units in either direction. Brackets beyond that limit do not produce a guide. Syntax-tree-based matching remains a possible extension.
+Scope guides match bracket characters, including those in strings and comments. Each selection change scans at most 131,072 UTF-16 code units before the selection, and the selection plus at most 131,072 code units after it. Brackets beyond that limit do not produce a guide. Syntax-tree-based matching remains a possible extension.
 
 Each search materializes the document on the search queue, which takes O(document length) time and memory, and every edit restarts the search while a query is set. An editor collects at most 100,000 matches per query. Matches are not adjusted to grapheme boundaries, so a search for a base letter can match inside a combined character sequence. Replace is not implemented.
 

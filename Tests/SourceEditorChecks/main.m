@@ -289,10 +289,12 @@ static void SCECheckSelectionPainting(void) {
 }
 
 // Independent reference: match each bracket kind over the whole window with a
-// stack, then take the enclosing multiline pair whose opener is nearest.
-static NSRange SCEReferenceBracketScope(NSString *text, NSUInteger offset, NSUInteger limit) {
+// stack, then take the multiline pair enclosing the range whose opener is nearest.
+static NSRange SCEReferenceBracketScope(NSString *text, NSRange range, NSUInteger limit) {
+    NSUInteger offset = range.location;
+    NSUInteger end = NSMaxRange(range);
     NSUInteger lower = offset > limit ? offset - limit : 0;
-    NSUInteger upper = MIN(text.length, offset + limit);
+    NSUInteger upper = MIN(text.length, end + limit);
     NSString *opens = @"([{";
     NSString *closes = @")]}";
     NSMutableArray<NSMutableArray<NSNumber *> *> *stacks =
@@ -311,7 +313,7 @@ static NSRange SCEReferenceBracketScope(NSString *text, NSUInteger offset, NSUIn
         }
         NSUInteger open = stacks[kind].lastObject.unsignedIntegerValue;
         [stacks[kind] removeLastObject];
-        if (!(open < offset && i >= offset)) {
+        if (!(open < offset && i >= end)) {
             continue;
         }
         NSUInteger newlines = 0;
@@ -373,6 +375,28 @@ static void SCECheckScopeGuide(void) {
     CHECK(SCEEnclosingMultilineBracketRange(unclosed, 13, SCEBracketScopeDefaultScanLimit).location == 0,
           "an unclosed ( must not hide the enclosing { scope");
 
+    // A selection shows only the innermost pair that encloses all of it.
+    NSRange (^selectionScope)(NSString *, NSString *) = ^NSRange(NSString *first, NSString *last) {
+        NSUInteger start = [swift rangeOfString:first].location;
+        NSUInteger end = NSMaxRange([swift rangeOfString:last]);
+        return SCEEnclosingMultilineBracketRangeForRange(buffer, NSMakeRange(start, end - start),
+                                                         SCEBracketScopeDefaultScanLimit);
+    };
+    CHECK(NSEqualRanges(selectionScope(@"selection = tab", @"selection = tab"), button),
+          "a selection within one line must use the scope of that line");
+    CHECK(NSEqualRanges(selectionScope(@"let isSelected", @"selection = tab"), forEach),
+          "a selection that leaves a nested block must use the pair enclosing both ends");
+    CHECK(NSEqualRanges(selectionScope(@"selection = tab", @".font"), forEach),
+          "a selection spanning sibling blocks must use their common enclosing pair");
+    CHECK(NSEqualRanges(selectionScope(@"\n            selection", @"selection = tab\n"), button),
+          "a selection of a block's interior must use that block");
+    CHECK(NSEqualRanges(selectionScope(@"{\n            selection", @"tab\n        }"), forEach),
+          "a selection that includes a block's brackets must use the enclosing pair");
+    CHECK(
+        SCEEnclosingMultilineBracketRangeForRange(buffer, NSMakeRange(0, swift.length), SCEBracketScopeDefaultScanLimit)
+                .location == NSNotFound,
+        "selecting the whole document has no enclosing scope");
+
     // Random bracket sequences cross text-reading chunk boundaries in both directions.
     NSString *alphabet = @"(){}[]\n\nab ";
     for (NSUInteger round = 0; round < 300; round++) {
@@ -385,12 +409,15 @@ static void SCECheckScopeGuide(void) {
         SCETextBuffer *randomBuffer = [[SCETextBuffer alloc] initWithString:text];
         for (NSUInteger probe = 0; probe < 20; probe++) {
             NSUInteger offset = SCERandom(text.length + 1);
+            NSUInteger length = probe % 2 == 0 ? 0 : SCERandom(MIN(text.length - offset, 600) + 1);
+            NSRange range = NSMakeRange(offset, length);
             NSUInteger limit = probe % 4 == 0 ? 1 + SCERandom(6000) : SCEBracketScopeDefaultScanLimit;
-            NSRange actual = SCEEnclosingMultilineBracketRange(randomBuffer, offset, limit);
-            NSRange expected = SCEReferenceBracketScope(text, offset, limit);
+            NSRange actual = length ? SCEEnclosingMultilineBracketRangeForRange(randomBuffer, range, limit)
+                                    : SCEEnclosingMultilineBracketRange(randomBuffer, offset, limit);
+            NSRange expected = SCEReferenceBracketScope(text, range, limit);
             if (!NSEqualRanges(actual, expected)) {
-                fprintf(stderr, "length %lu offset %lu limit %lu: got %s, expected %s\n", (unsigned long)length,
-                        (unsigned long)offset, (unsigned long)limit, NSStringFromRange(actual).UTF8String,
+                fprintf(stderr, "text length %lu range %s limit %lu: got %s, expected %s\n", (unsigned long)text.length,
+                        NSStringFromRange(range).UTF8String, (unsigned long)limit, NSStringFromRange(actual).UTF8String,
                         NSStringFromRange(expected).UTF8String);
             }
             CHECK(NSEqualRanges(actual, expected), "bracket scope must match the stack reference");
@@ -402,6 +429,12 @@ static void SCECheckScopeGuide(void) {
     editor.string = swift;
     editor.selectedRange = NSMakeRange([swift rangeOfString:@"let"].location, 0);
     CHECK(NSEqualRanges(editor.scopeGuideBracketRange, forEach), "editor must expose the caret's scope");
+    NSUInteger selectionStart = [swift rangeOfString:@"selection = tab"].location;
+    editor.selectedRange = NSMakeRange(selectionStart, 15);
+    CHECK(NSEqualRanges(editor.scopeGuideBracketRange, button), "editor must expose a one-line selection's scope");
+    editor.selectedRange = NSMakeRange(selectionStart, NSMaxRange([swift rangeOfString:@".font"]) - selectionStart);
+    CHECK(NSEqualRanges(editor.scopeGuideBracketRange, forEach),
+          "extending the selection out of a block must move the guide to the enclosing pair");
     editor.selectedRange = NSMakeRange(0, 0);
     [editor insertText:@"\n" replacementRange:NSMakeRange(0, 0)];
     editor.selectedRange = NSMakeRange([swift rangeOfString:@"let"].location + 1, 0);
@@ -432,24 +465,42 @@ static void SCECheckScopeGuide(void) {
         CGContextRelease(bitmap);
     }
     CHECK(editor.scopeGuideBracketRange.location == NSNotFound, "a hidden guide must report no scope");
-    size_t minX = SIZE_MAX, maxX = 0, rows = 0;
+    // Each row's intensity is the summed channel difference between the renderings.
+    size_t minX = SIZE_MAX, maxX = 0, firstRow = SIZE_MAX, lastRow = 0;
+    NSUInteger *rowIntensity = calloc(height, sizeof(NSUInteger));
     for (size_t y = 0; y < height; y++) {
-        BOOL rowDiffers = NO;
         for (size_t x = 0; x < width; x++) {
-            if (memcmp(renders[0] + (y * width + x) * 4, renders[1] + (y * width + x) * 4, 4) != 0) {
+            const uint8_t *shown = renders[0] + (y * width + x) * 4;
+            const uint8_t *hidden = renders[1] + (y * width + x) * 4;
+            if (memcmp(shown, hidden, 4) != 0) {
                 minX = MIN(minX, x);
                 maxX = MAX(maxX, x);
-                rowDiffers = YES;
+                firstRow = MIN(firstRow, y);
+                lastRow = MAX(lastRow, y);
+                for (size_t channel = 0; channel < 3; channel++) {
+                    rowIntensity[y] += (NSUInteger)abs((int)shown[channel] - (int)hidden[channel]);
+                }
             }
         }
-        rows += rowDiffers;
     }
     free(renders[0]);
     free(renders[1]);
     size_t expectedX = (size_t)round((12 + indentX) * scale);
     CHECK(indentX > 0 && minX == expectedX && maxX == expectedX + scale - 1,
           "guide must be one point wide at the opening line's indentation");
-    CHECK(rows == (size_t)round(8 * lineHeight * scale), "guide must span exactly the lines inside the brackets");
+    // The guide fades in and out over its first and last few points, so its
+    // faintest end rows may match the background exactly.
+    size_t spanRows = (size_t)round(8 * lineHeight * scale);
+    size_t rows = firstRow == SIZE_MAX ? 0 : lastRow + 1 - firstRow;
+    CHECK(rows <= spanRows && rows + 2 * scale >= spanRows, "guide must span the lines inside the brackets");
+    NSUInteger middle = rowIntensity[(firstRow + lastRow) / 2];
+    CHECK(middle > 0 && rowIntensity[firstRow] * 3 < middle && rowIntensity[lastRow] * 3 < middle,
+          "guide ends must fade instead of stopping abruptly");
+    size_t fadeRows = (size_t)(6 * scale);
+    // The current-line highlight behind part of the guide changes its contrast slightly.
+    CHECK(rowIntensity[firstRow + fadeRows] * 10 >= middle * 9 && rowIntensity[lastRow - fadeRows] * 10 >= middle * 9,
+          "guide must reach full strength within the fade length");
+    free(rowIntensity);
     puts("PASS scope guide: innermost multiline bracket pair, stack-reference fuzzing, edits, guide pixels");
 }
 

@@ -42,12 +42,15 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 @property (nonatomic, getter=isFocusable) BOOL focusable;
 @property (nonatomic) BOOL showsLineNumbers;
 /// Draws a vertical guide through the lines inside the innermost (), [] or {}
-/// pair around the caret, at the opening line's indentation. A guide requires
-/// at least one line between the brackets. Defaults to YES.
+/// pair that encloses the whole selection, or the caret when the selection is
+/// empty, at the opening line's indentation. Selected brackets belong to the
+/// selection, so selecting a block's brackets moves the guide to the enclosing
+/// pair. A guide requires at least one line between the brackets, and its ends
+/// fade in and out. Defaults to YES.
 @property (nonatomic) BOOL showsScopeGuide;
 /// The opening through closing bracket the guide is drawn for, or
 /// {NSNotFound, 0}. Character matching includes brackets in strings and comments.
-/// The search is bounded around the caret.
+/// The search is bounded around the selection.
 @property (nonatomic, readonly) NSRange scopeGuideBracketRange;
 @property (nonatomic) NSUInteger tabWidth;
 @property (nonatomic, getter=isAutomaticIndentationEnabled) BOOL automaticIndentationEnabled;

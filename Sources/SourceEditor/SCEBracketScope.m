@@ -79,9 +79,14 @@ static BOOL SCEReadForward(SCEBracketReader *reader, unichar *character, NSUInte
 }
 
 NSRange SCEEnclosingMultilineBracketRange(SCETextBuffer *buffer, NSUInteger offset, NSUInteger scanLimit) {
+    return SCEEnclosingMultilineBracketRangeForRange(buffer, NSMakeRange(offset, 0), scanLimit);
+}
+
+NSRange SCEEnclosingMultilineBracketRangeForRange(SCETextBuffer *buffer, NSRange range, NSUInteger scanLimit) {
     NSRange notFound = NSMakeRange(NSNotFound, 0);
     NSUInteger length = buffer.lengthUTF16;
-    offset = MIN(offset, length);
+    NSUInteger offset = MIN(range.location, length);
+    NSUInteger end = MAX(offset, MIN(NSMaxRange(range), length));
     SCEBracketReader *backward = calloc(1, sizeof(SCEBracketReader));
     SCEBracketReader *forward = calloc(1, sizeof(SCEBracketReader));
     if (!backward || !forward) {
@@ -94,10 +99,13 @@ NSRange SCEEnclosingMultilineBracketRange(SCETextBuffer *buffer, NSUInteger offs
     backward->limit = offset > scanLimit ? offset - scanLimit : 0;
     forward->buffer = buffer;
     forward->position = offset;
-    forward->limit = length - offset > scanLimit ? offset + scanLimit : length;
+    // The forward scan starts at the range start so that brackets inside the
+    // range are balanced, and continues at most scanLimit past the range end.
+    forward->limit = length - end > scanLimit ? end + scanLimit : length;
 
     // With each kind balanced on its own, the n-th unmatched opener of a kind
-    // before the caret pairs with the n-th unmatched closer of that kind after it.
+    // before the range pairs with the n-th unmatched closer of that kind after
+    // the range start.
     NSUInteger backwardDepth[SCEBracketKindCount] = {0};
     NSUInteger openersFound[SCEBracketKindCount] = {0};
     NSUInteger forwardDepth[SCEBracketKindCount] = {0};
@@ -144,6 +152,10 @@ NSRange SCEEnclosingMultilineBracketRange(SCETextBuffer *buffer, NSUInteger offs
             continue;
         }
         NSUInteger close = closers[kind][ordinal].unsignedIntegerValue;
+        // A pair that closes inside the range does not enclose all of it.
+        if (close < end) {
+            continue;
+        }
         NSUInteger openLine = [buffer lineIndexForUTF16Offset:open];
         NSUInteger closeLine = [buffer lineIndexForUTF16Offset:close];
         if (closeLine >= openLine + 2) {
