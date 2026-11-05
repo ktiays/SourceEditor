@@ -4,6 +4,7 @@
 #import "SCESelectionPath.h"
 #import "SCEBracketScope.h"
 #import "SCETextSearchMatching.h"
+#import "SCELanguageConfigurationInternal.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
@@ -135,6 +136,11 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     NSRange _markedRange;
     NSRange _compositionOriginalSelection;
     NSString *_compositionOriginalText;
+    BOOL _interpretingKeyEvents;
+    // UTF-16 offsets of closers inserted by typing completion. Only these closers
+    // are overtyped. Edits move the offsets, and the set is cleared when the caret
+    // leaves the line or a selection is made.
+    NSMutableIndexSet *_generatedClosingOffsets;
     NSUInteger _dragGranularity;
     NSRange _dragInitialRange;
     NSEvent *_lastDragEvent;
@@ -208,6 +214,8 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     _scopeGuideBrackets = NSMakeRange(NSNotFound, 0);
     _scopeGuideX = NAN;
     _automaticIndentationEnabled = YES;
+    _insertsSpacesForTabs = YES;
+    _generatedClosingOffsets = [NSMutableIndexSet indexSet];
     _automaticLinkDetectionEnabled = YES;
     _hoveredLinkRange = NSMakeRange(NSNotFound, 0);
     _tabWidth = 4;
@@ -645,6 +653,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
                                                     afterBuffer:_buffer];
     }
     [_editUndoManager removeAllActions];
+    [_generatedClosingOffsets removeAllIndexes];
     [_layoutCache removeAllLayouts];
     [_layoutCache removeAllSyntaxTokens];
     _searchMatchData.length = 0;
@@ -691,6 +700,10 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     _scopeGuideX = NAN;
     _maximumMeasuredWidth = 0;
     [self updateViewport];
+}
+
+- (void)setIndentationWidth:(NSUInteger)indentationWidth {
+    _indentationWidth = MIN(indentationWidth, 32);
 }
 
 - (void)setShowsScopeGuide:(BOOL)showsScopeGuide {
@@ -855,6 +868,16 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (void)selectionDidChange {
+    if (_generatedClosingOffsets.count) {
+        if (_anchor != _head) {
+            [_generatedClosingOffsets removeAllIndexes];
+        } else {
+            NSRange line = [_buffer UTF16RangeOfLine:[_buffer lineIndexForUTF16Offset:_head] includingLineEnding:NO];
+            if ([_generatedClosingOffsets countOfIndexesInRange:line] != _generatedClosingOffsets.count) {
+                [_generatedClosingOffsets removeAllIndexes];
+            }
+        }
+    }
     [self updateScopeGuide];
     _backgroundSurface.needsDisplay = YES;
     [self updateCaret];
@@ -1388,6 +1411,14 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     SCETextBuffer *before = [_buffer copy];
     [self invalidateDetectedLinks];
     [_buffer replaceCharactersInUTF16Range:range withString:text];
+    if (_generatedClosingOffsets.count) {
+        [_generatedClosingOffsets removeIndexesInRange:range];
+        [_generatedClosingOffsets shiftIndexesStartingAtIndex:NSMaxRange(range)
+                                                           by:(NSInteger)text.length - (NSInteger)range.length];
+    }
+    [_languageConfiguration invalidateContextForReplacementOfUTF16Range:range
+                                                         previousBuffer:before
+                                                            afterBuffer:_buffer];
     if (_syntaxHighlighter) {
         _pendingSyntaxEdit = [[SCETextEdit alloc] initWithRange:range
                                             insertedLengthUTF16:text.length
@@ -1412,7 +1443,66 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     [_textInputContext discardMarkedText];
 }
 
+- (BOOL)completeBracketForKeyboardText:(NSString *)text {
+    if (!_editable || !_interpretingKeyEvents || _bracketCompletionMode != SCEBracketCompletionModeWhileTyping ||
+        !_languageConfiguration || [self hasMarkedText] || self.selectedRange.length || text.length != 1) {
+        return NO;
+    }
+    NSUInteger offset = self.selectedRange.location;
+    unichar character = [text characterAtIndex:0];
+    SCEBracketPair *openingPair = nil;
+    BOOL isClosingCharacter = NO;
+    for (SCEBracketPair *pair in _languageConfiguration.bracketPairs) {
+        if (pair.openingCharacter == character) {
+            openingPair = pair;
+        }
+        isClosingCharacter |= pair.closingCharacter == character;
+    }
+    if ((!openingPair && !isClosingCharacter) ||
+        [_languageConfiguration contextAtUTF16Offset:offset inBuffer:_buffer] != SCELanguageContextCode) {
+        return NO;
+    }
+    unichar nextCharacter = 0;
+    if (offset < _buffer.lengthUTF16) {
+        [_buffer getUTF16Characters:&nextCharacter range:NSMakeRange(offset, 1)];
+    }
+    // Overtype only a closer that completion generated; a closer typed or pasted
+    // by the user may belong to an outer pair, so typing inserts another one.
+    if (isClosingCharacter && nextCharacter == character && [_generatedClosingOffsets containsIndex:offset]) {
+        [_generatedClosingOffsets removeIndex:offset];
+        [self setAnchor:offset + 1 head:offset + 1 scroll:YES preserveX:NO];
+        return YES;
+    }
+    if (!openingPair) {
+        return NO;
+    }
+    BOOL canComplete = offset == _buffer.lengthUTF16 || nextCharacter == ' ' || nextCharacter == '\t' ||
+                       nextCharacter == '\r' || nextCharacter == '\n';
+    for (SCEBracketPair *pair in _languageConfiguration.bracketPairs) {
+        canComplete |= nextCharacter == pair.closingCharacter;
+    }
+    if (!canComplete) {
+        return NO;
+    }
+    unichar characters[] = {openingPair.openingCharacter, openingPair.closingCharacter};
+    [self replaceRange:NSMakeRange(offset, 0)
+            withString:[NSString stringWithCharacters:characters length:2]
+        selectionAfter:NSMakeRange(offset + 1, 0)
+          registerUndo:YES];
+    [_generatedClosingOffsets addIndex:offset + 1];
+    return YES;
+}
+
 - (void)insertText:(id)value replacementRange:(NSRange)replacementRange {
+    NSString *text = [value isKindOfClass:NSAttributedString.class] ? [value string] : value;
+    if ([text isKindOfClass:NSString.class] && replacementRange.location == NSNotFound &&
+        [self completeBracketForKeyboardText:text]) {
+        return;
+    }
+    [self insertLiteralText:value replacementRange:replacementRange];
+}
+
+- (void)insertLiteralText:(id)value replacementRange:(NSRange)replacementRange {
     if (!_editable) {
         return;
     }
@@ -1562,7 +1652,13 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
 }
 
 - (void)keyDown:(NSEvent *)event {
-    [self interpretKeyEvents:@[ event ]];
+    BOOL wasInterpretingKeyEvents = _interpretingKeyEvents;
+    _interpretingKeyEvents = YES;
+    @try {
+        [self interpretKeyEvents:@[ event ]];
+    } @finally {
+        _interpretingKeyEvents = wasInterpretingKeyEvents;
+    }
 }
 
 - (void)doCommandBySelector:(SEL)selector {
@@ -1609,7 +1705,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
 - (void)paste:(id)sender {
     NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
     if (_editable && text) {
-        [self insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
+        [self insertLiteralText:text replacementRange:NSMakeRange(NSNotFound, 0)];
     }
 }
 
@@ -1684,35 +1780,209 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     [self deleteRange:range];
 }
 
+- (NSUInteger)effectiveIndentationWidth {
+    return _indentationWidth ?: _tabWidth;
+}
+
+- (NSUInteger)indentationColumnsInString:(NSString *)text length:(NSUInteger)length {
+    NSUInteger columns = 0;
+    for (NSUInteger index = 0; index < length; index++) {
+        columns += [text characterAtIndex:index] == '\t' ? _tabWidth - columns % _tabWidth : 1;
+    }
+    return columns;
+}
+
+- (NSString *)indentationForColumnCount:(NSUInteger)columns {
+    NSUInteger tabs = _insertsSpacesForTabs ? 0 : columns / _tabWidth;
+    NSUInteger spaces = columns - tabs * _tabWidth;
+    NSString *prefix = [@"" stringByPaddingToLength:tabs withString:@"\t" startingAtIndex:0];
+    return [prefix stringByAppendingString:[@"" stringByPaddingToLength:spaces withString:@" " startingAtIndex:0]];
+}
+
+- (NSString *)lineEndingForLineAtIndex:(NSUInteger)line {
+    NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
+    unichar ending[2] = {0};
+    NSUInteger endingLength = MIN(range.length, 2);
+    [_buffer getUTF16Characters:ending range:NSMakeRange(NSMaxRange(range) - endingLength, endingLength)];
+    if (endingLength == 2 && ending[0] == '\r' && ending[1] == '\n') {
+        return @"\r\n";
+    }
+    if ((endingLength && ending[endingLength - 1] == '\n') || line == 0) {
+        return @"\n";
+    }
+    return [self lineEndingForLineAtIndex:0];
+}
+
+// Returns YES when the pair's openers before `offset` outnumber the closers after
+// it, counting only brackets in code context. Nested pairs on either side cancel
+// out, so an enclosing block's closer does not satisfy a newly typed opener:
+// "{ x {|\n}" needs a closer, while "{|\n}" does not. Text before the scan window
+// can only add openers, so truncating it never causes a spurious closer. Text
+// after the window could contain the closer, so a truncated trailing window or
+// an unclassifiable bracket returns NO.
+- (BOOL)needsClosingBracketForPair:(SCEBracketPair *)pair beforeUTF16Offset:(NSUInteger)offset {
+    NSUInteger length = _buffer.lengthUTF16;
+    NSUInteger scanLimit = SCEBracketScopeDefaultScanLimit;
+    if (length - offset > scanLimit) {
+        return NO;
+    }
+    NSUInteger start = offset > scanLimit ? offset - scanLimit : 0;
+    NSUInteger unmatchedOpeners = 0;
+    NSUInteger nestedOpeners = 0;
+    NSUInteger unmatchedClosers = 0;
+    unichar characters[4096];
+    NSUInteger chunkLength = 0;
+    for (NSUInteger chunkStart = start; chunkStart < length; chunkStart += chunkLength) {
+        chunkLength = MIN(sizeof(characters) / sizeof(characters[0]), length - chunkStart);
+        [_buffer getUTF16Characters:characters range:NSMakeRange(chunkStart, chunkLength)];
+        for (NSUInteger index = 0; index < chunkLength; index++) {
+            unichar character = characters[index];
+            BOOL isOpening = character == pair.openingCharacter;
+            if (!isOpening && character != pair.closingCharacter) {
+                continue;
+            }
+            // Offsets increase monotonically, which lets the built-in provider
+            // resume from its previous lexical state for each lookup.
+            NSUInteger position = chunkStart + index;
+            SCELanguageContext context = [_languageConfiguration contextAtUTF16Offset:position inBuffer:_buffer];
+            if (context == SCELanguageContextUnknown) {
+                return NO;
+            }
+            if (context != SCELanguageContextCode) {
+                continue;
+            }
+            if (!isOpening) {
+                // A closer that leaves code context, such as the brace that ends
+                // a JavaScript template substitution, is not a code bracket.
+                context = [_languageConfiguration contextAtUTF16Offset:position + 1 inBuffer:_buffer];
+                if (context == SCELanguageContextUnknown) {
+                    return NO;
+                }
+                if (context != SCELanguageContextCode) {
+                    continue;
+                }
+            }
+            if (position < offset) {
+                if (isOpening) {
+                    unmatchedOpeners++;
+                } else if (unmatchedOpeners) {
+                    unmatchedOpeners--;
+                }
+            } else if (isOpening) {
+                nestedOpeners++;
+            } else if (nestedOpeners) {
+                nestedOpeners--;
+            } else if (++unmatchedClosers >= unmatchedOpeners) {
+                return NO;
+            }
+        }
+    }
+    return unmatchedOpeners > unmatchedClosers;
+}
+
 - (void)insertNewline:(id)sender {
     if (!_editable) {
         return;
     }
+    BOOL hadMarkedText = [self hasMarkedText];
     [self finishComposition];
-    NSUInteger line = [_buffer lineIndexForUTF16Offset:self.selectedRange.location];
-    NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
-    NSString *text = [_buffer substringWithUTF16Range:range];
-    NSUInteger maxIndent = MIN(self.selectedRange.location - range.location, text.length);
-    NSUInteger indent = 0;
+    NSRange selection = self.selectedRange;
+    NSUInteger line = [_buffer lineIndexForUTF16Offset:selection.location];
+    NSRange lineRange = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
+    NSString *text = [_buffer substringWithUTF16Range:lineRange];
+    NSString *ending = [self lineEndingForLineAtIndex:line];
+    NSUInteger localOffset = MIN(selection.location - lineRange.location, text.length);
+    NSUInteger indentLength = 0;
     if (_automaticIndentationEnabled) {
-        while (indent < maxIndent && ([text characterAtIndex:indent] == ' ' || [text
-                                                                                   characterAtIndex:indent] == '\t')) {
-            indent++;
+        while (indentLength < localOffset &&
+               ([text characterAtIndex:indentLength] == ' ' || [text characterAtIndex:indentLength] == '\t')) {
+            indentLength++;
         }
     }
-    NSString *ending = [text hasSuffix:@"\r\n"] ? @"\r\n" : @"\n";
-    if (![text hasSuffix:@"\n"] && _buffer.lineCount > 1) {
-        NSString *first = [_buffer substringWithUTF16Range:[_buffer UTF16RangeOfLine:0 includingLineEnding:YES]];
-        if ([first hasSuffix:@"\r\n"]) {
-            ending = @"\r\n";
+    NSUInteger columns = [self indentationColumnsInString:text length:indentLength];
+    NSString *baseIndentation = [self indentationForColumnCount:columns];
+    SCEBracketPair *openingPair = nil;
+    if (_automaticIndentationEnabled && !hadMarkedText && !selection.length && _languageConfiguration) {
+        NSUInteger openingEnd = localOffset;
+        while (openingEnd &&
+               ([text characterAtIndex:openingEnd - 1] == ' ' || [text characterAtIndex:openingEnd - 1] == '\t')) {
+            openingEnd--;
+        }
+        if (openingEnd) {
+            unichar character = [text characterAtIndex:openingEnd - 1];
+            for (SCEBracketPair *pair in _languageConfiguration.bracketPairs) {
+                if (pair.expandsOnNewline && pair.openingCharacter == character) {
+                    openingPair = pair;
+                    break;
+                }
+            }
+            if (openingPair && [_languageConfiguration contextAtUTF16Offset:lineRange.location + openingEnd - 1
+                                                                   inBuffer:_buffer] != SCELanguageContextCode) {
+                openingPair = nil;
+            }
         }
     }
-    [self insertText:[ending stringByAppendingString:[text substringToIndex:indent]]
-        replacementRange:NSMakeRange(NSNotFound, 0)];
+    NSString *innerIndentation =
+        openingPair ? [self indentationForColumnCount:columns + self.effectiveIndentationWidth] : baseIndentation;
+    NSString *insertion = [ending stringByAppendingString:innerIndentation];
+    if (openingPair) {
+        NSUInteger closingOffset = localOffset;
+        while (closingOffset < text.length &&
+               ([text characterAtIndex:closingOffset] == ' ' || [text characterAtIndex:closingOffset] == '\t')) {
+            closingOffset++;
+        }
+        BOOL hasAdjacentCloser =
+            closingOffset < text.length && [text characterAtIndex:closingOffset] == openingPair.closingCharacter;
+        // A following line may already contain the matching closer, so generate
+        // one only when the opener is unmatched and nothing follows the caret.
+        BOOL canInsertCloser =
+            _bracketCompletionMode != SCEBracketCompletionModeDisabled && closingOffset == text.length &&
+            [self needsClosingBracketForPair:openingPair beforeUTF16Offset:lineRange.location + closingOffset];
+        if (hasAdjacentCloser || canInsertCloser) {
+            NSMutableString *replacement = [insertion mutableCopy];
+            [replacement appendString:ending];
+            [replacement appendString:baseIndentation];
+            if (canInsertCloser) {
+                unichar closingCharacter = openingPair.closingCharacter;
+                [replacement appendString:[NSString stringWithCharacters:&closingCharacter length:1]];
+            }
+            [self replaceRange:NSMakeRange(selection.location, closingOffset - localOffset)
+                    withString:replacement
+                selectionAfter:NSMakeRange(selection.location + insertion.length, 0)
+                  registerUndo:YES];
+            return;
+        }
+    }
+    [self insertLiteralText:insertion replacementRange:NSMakeRange(NSNotFound, 0)];
 }
 
 - (void)insertTab:(id)sender {
-    [self insertText:@"\t" replacementRange:NSMakeRange(NSNotFound, 0)];
+    if (!_editable) {
+        return;
+    }
+    [self finishComposition];
+    NSString *insertion = @"\t";
+    if (_insertsSpacesForTabs) {
+        NSUInteger offset = self.selectedRange.location;
+        NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
+        NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
+        CGFloat x = [[_layoutCache layoutForLineAtIndex:line] xForUTF16Index:offset - range.location];
+        unichar space = ' ';
+        CGGlyph glyph;
+        CGSize advance = CGSizeMake(_font.pointSize * 0.6, 0);
+        CTFontRef font = (__bridge CTFontRef)_font;
+        if (CTFontGetGlyphsForCharacters(font, &space, &glyph, 1)) {
+            CTFontGetAdvancesForGlyphs(font, kCTFontOrientationHorizontal, &glyph, &advance, 1);
+        }
+        CGFloat column = MAX(0, x) / MAX(1, advance.width);
+        NSUInteger width = self.effectiveIndentationWidth;
+        CGFloat nextStop = (floor((column + 1e-6) / width) + 1) * width;
+        // Proportional fonts may put the caret between space columns. Round up
+        // to whole spaces without treating UTF-16 offsets as display columns.
+        NSUInteger spaces = MAX(1, (NSUInteger)ceil(nextStop - column - 1e-6));
+        insertion = [@"" stringByPaddingToLength:spaces withString:@" " startingAtIndex:0];
+    }
+    [self insertLiteralText:insertion replacementRange:NSMakeRange(NSNotFound, 0)];
 }
 
 - (void)cancelOperation:(id)sender {

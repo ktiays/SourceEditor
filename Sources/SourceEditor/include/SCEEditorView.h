@@ -3,10 +3,17 @@
 #import "SCESyntaxHighlighting.h"
 #import "SCESyntaxTheme.h"
 #import "SCETextSearch.h"
+#import "SCELanguageConfiguration.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class SCEEditorView;
+
+typedef NS_ENUM(NSUInteger, SCEBracketCompletionMode) {
+    SCEBracketCompletionModeDisabled,
+    SCEBracketCompletionModeOnNewline,
+    SCEBracketCompletionModeWhileTyping,
+};
 
 @protocol SCEEditorViewDelegate <NSObject>
 @optional
@@ -52,8 +59,30 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 /// {NSNotFound, 0}. Character matching includes brackets in strings and comments.
 /// The search is bounded around the selection.
 @property (nonatomic, readonly) NSRange scopeGuideBracketRange;
+/// Distance between literal tab stops in space columns. Defaults to 4 and is
+/// clamped to 1...32. Changing it affects layout without rewriting text.
 @property (nonatomic) NSUInteger tabWidth;
+/// Columns per indentation level and soft Tab stop. Defaults to 0, which follows
+/// tabWidth. Explicit values are clamped to 1...32.
+@property (nonatomic) NSUInteger indentationWidth;
+/// Tab inserts spaces to the next indentation stop when YES, or one literal tab
+/// when NO. Generated leading indentation uses spaces, or tabs plus any remaining
+/// spaces, respectively. Defaults to YES. Existing text and paste are preserved.
+@property (nonatomic) BOOL insertsSpacesForTabs;
+/// Return inherits indentation and applies the language's newline rules. When
+/// NO, Return inserts only the document's newline sequence. Defaults to YES.
 @property (nonatomic, getter=isAutomaticIndentationEnabled) BOOL automaticIndentationEnabled;
+/// Defaults to Disabled. OnNewline generates a closer on Return after an unmatched
+/// eligible opener when only whitespace follows the caret on its line. An enclosing
+/// block's closer does not match the new opener. WhileTyping also pairs
+/// single-character keyboard input, nesting inside any existing pair, and advances
+/// over an adjacent closer that it generated while the caret remains on that line.
+/// Paste, explicit text replacements, nonempty selections, and marked-text
+/// composition do not pair.
+@property (nonatomic) SCEBracketCompletionMode bracketCompletionMode;
+/// Optional immutable language rules. Defaults to nil. Independent of the syntax
+/// highlighter; assigning rules preserves document text, selection, and undo.
+@property (nonatomic, copy, nullable) SCELanguageConfiguration *languageConfiguration;
 @property (nonatomic, readonly) NSUInteger lineCount;
 
 /// Customizes each context menu. The editor does not retain its delegate.

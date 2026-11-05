@@ -1,4 +1,5 @@
 #import "include/SCETextBuffer.h"
+#import "SCETextBufferInternal.h"
 
 static const NSUInteger SCETextChunkLength = 4096;
 
@@ -242,6 +243,10 @@ static NSUInteger SCEOffsetOfLineFeed(SCETextNode *node, NSUInteger index) {
     copy->_revision = _revision;
     copy->_documentIdentifier = _documentIdentifier;
     return copy;
+}
+
+- (BOOL)hasSameStorageAsBuffer:(SCETextBuffer *)buffer {
+    return _root == buffer->_root;
 }
 
 - (NSUInteger)lengthUTF16 {

@@ -6,6 +6,7 @@
 #import <time.h>
 #import "SCESyntaxChecks.h"
 #import "SCEInteractionChecks.h"
+#import "SCEEditingChecks.h"
 
 @interface SCEEditorView (SelectionRenderingChecks)
 - (void)drawBackgroundSurface:(NSView *)surface;
@@ -1003,6 +1004,7 @@ int main(int argc, const char *argv[]) {
         SCECheckEditorSearch();
         SCECheckCount += SCECheckEditorInteractions();
         SCECheckCount += SCECheckSyntaxCore();
+        SCECheckCount += SCECheckConfiguredEditing();
         SCEBenchmark();
         printf("All %lu checks passed.\n", (unsigned long)SCECheckCount);
     }

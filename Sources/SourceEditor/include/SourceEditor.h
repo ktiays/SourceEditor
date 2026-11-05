@@ -1,4 +1,7 @@
 #import "SCETextBuffer.h"
+#import "SCEBracketPair.h"
+#import "SCELanguageContextProvider.h"
+#import "SCELanguageConfiguration.h"
 #import "SCEEditorView.h"
 #import "SCESyntaxHighlighting.h"
 #import "SCESyntaxTheme.h"

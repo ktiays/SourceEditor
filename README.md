@@ -21,7 +21,7 @@ SOURCE_EDITOR_CORE_ONLY=1 swift build --target SourceEditor
 ./script/test.sh --core-only
 ```
 
-`SourceEditor` is the standalone editor library; `SourceEditorTreeSitter` is the optional syntax highlighting library. The AppKit demo defaults to Plain Text. Use the language control in the status bar or the **Syntax** menu to select Plain Text or JSON while preserving the document and undo history. The status bar uses an `NSVisualEffectView` over the scrolling editor, with separate indicator and separator views. Scroll insets keep the last line and caret above it. If a highlighter cannot initialize, the demo uses Plain Text.
+`SourceEditor` is the standalone editor library; `SourceEditorTreeSitter` is the optional syntax highlighting library. The AppKit demo defaults to Plain Text. Use the language control in the status bar or the **Syntax** menu to select Plain Text, JSON, or JavaScript while preserving the document and undo history. JSON enables highlighting and bracket completion on Return. JavaScript enables its editing rules without a syntax highlighter. The status bar uses an `NSVisualEffectView` over the scrolling editor, with separate indicator and separator views. Scroll insets keep the last line and caret above it. If the JSON highlighter cannot initialize, the demo uses Plain Text.
 
 The status bar items and available languages are configurable. `SCEStatusBarView.items` sets the items and their order: `line`, `column`, `lineCount`, and `language`. The language item appears at the trailing edge. `languageTitles` defines the available choices. An empty list hides the language item, one title displays a fixed label, and two or more titles display a pop-up button. When no items are visible, `hasVisibleItems` returns `NO`; the demo hides the bar and removes its scroll insets.
 
@@ -31,6 +31,7 @@ The demo reads both settings from user defaults. Each accepts a comma-separated 
 open dist/SourceEditorDemo.app --args -SCEStatusBarItems 'line,column,language' -SCESyntaxLanguages 'plaintext,json'
 open dist/SourceEditorDemo.app --args -SCEStatusBarItems ''      # Hide the status bar.
 open dist/SourceEditorDemo.app --args -SCESyntaxLanguages 'json' # Use a fixed JSON language label.
+open dist/SourceEditorDemo.app --args -SCESyntaxLanguages 'javascript,json'
 ```
 
 The demo starts with the first listed language and displays the **Syntax** menu when at least two languages are available. Objective-C API names and demo launch keys use the `SCE` prefix. Integrations written against the earlier two-letter prefix must update their references.
@@ -64,6 +65,42 @@ self.view = scrollView;
 ```
 
 You can also create an `SCEEditorView` directly and assign it to an `NSScrollView`'s `documentView`. Access the editor and its properties on the main thread.
+
+## Indentation and bracket completion
+
+Tab inserts spaces by default. `tabWidth` sets literal tab stops in space columns and defaults to 4. `indentationWidth` sets the indentation step and soft Tab stops; its default of 0 follows `tabWidth`. Tab inserts enough spaces to reach the next indentation stop from the rendered caret position, rather than counting UTF-16 offsets. With proportional fonts, the required distance rounds up to whole spaces. Both widths are limited to 32 columns, and `tabWidth` is at least 1.
+
+Set `insertsSpacesForTabs` to `NO` to insert a literal tab on Tab. Generated leading indentation then uses tabs plus any remaining spaces, measured using `tabWidth`. Existing document text, explicit text replacements, and paste preserve their characters. Changing widths affects subsequent input and tab layout without rewriting document text or resetting undo.
+
+`automaticIndentationEnabled` defaults to `YES`. Return inherits the current line's indentation. Language configurations can add a level after an opening bracket and separate an adjacent matching closer onto its own line. When automatic indentation is disabled, Return inserts only the document's LF or CRLF sequence.
+
+```objc
+editor.tabWidth = 4;
+editor.indentationWidth = 2; // Use two-space indentation with four-column tab stops.
+editor.insertsSpacesForTabs = YES;
+editor.languageConfiguration = SCELanguageConfiguration.languageConfigurationForJSON;
+editor.bracketCompletionMode = SCEBracketCompletionModeOnNewline;
+```
+
+Language rules are independent of the optional syntax highlighter. JSON configures `{}` and `[]` for completion and multiline expansion. JavaScript adds `()` for inline completion; parentheses do not expand into an indented block. Select its preset with `SCELanguageConfiguration.languageConfigurationForJavaScript`.
+
+`bracketCompletionMode` defaults to `SCEBracketCompletionModeDisabled`:
+
+| Mode | Behavior |
+| --- | --- |
+| `Disabled` | Never generates a closer. Language indentation and expansion around an existing closer still apply. |
+| `OnNewline` | Return after an eligible opener, with only whitespace after the caret, generates a closer when the opener is unmatched. Existing adjacent closers are reused. |
+| `WhileTyping` | Also pairs a single opening bracket delivered by keyboard input before whitespace, a configured closer, or the document end. Opening brackets insert a complete new pair so nested typing remains balanced. Typing a closer advances the caret over an adjacent closer that completion generated. Generated closers are forgotten when the caret leaves their line or a selection is made; other closers are never overtyped, because they may belong to an outer pair. |
+
+For example, typing `{` and Return with the JSON preset and default widths produces `"{\n    \n}"`, with the caret after the four spaces. The generated replacement is one undo operation. An opener is unmatched when the pair's code-context openers before the caret outnumber its closers after the caret, so a closer that belongs to an enclosing block does not prevent completion. A matching closer already on a following line is preserved. When more than 131,072 UTF-16 units follow the caret, or a bracket's context is unknown, Return indents without inserting a closer.
+
+Completion applies at an empty caret in code context. Nonempty selections, strings, comments, marked-text composition, multi-character input, paste, and explicit text replacements retain literal insertion behavior. Input-method commits remain one undo transaction. Setting `languageConfiguration` to `nil` restores ordinary newline indentation while preserving text, selection, and undo.
+
+For custom languages, construct immutable `SCEBracketPair` values and pass them to `initWithBracketPairs:contextProvider:`. Each opening and closing character must be unique across all pairs. Pairs use distinct, non-whitespace BMP characters and exclude surrogates. The retained `SCELanguageContextProvider` implements `contextAtUTF16Offset:inBuffer:` on the main thread. It receives an independent buffer snapshot and must return promptly without mutating it. Return `SCELanguageContextUnknown` when current context cannot be established; only `SCELanguageContextCode` permits language-specific editing. `SCELanguageContextString` also covers template text and regular-expression literal contents.
+
+The presets scan rope chunks and cache lexical checkpoints for exact snapshot contents. Edits invalidate checkpoints after the replacement start; independently edited snapshots with equal document identifiers and revisions cannot reuse each other's state. Each lookup reads at most 131,072 UTF-16 units. A distant uncached position returns unknown while subsequent lookups can resume from the cached prefix. Checkpoint storage is bounded.
+
+JavaScript recognition handles quoted strings, line and block comments, template expressions, and common regular-expression and division contexts. Some lexical goals require syntactic context, as described in the [ECMAScript lexical grammar](https://tc39.es/ecma262/multipage/ecmascript-language-lexical-grammar.html). A slash after a closing parenthesis is division, except after the parenthesized head of `if`, `while`, `for`, or `with`, where it begins a regular expression. Other ambiguous slash positions, such as after a closing brace, escaped identifiers, nested regular-expression character classes, invalid string line endings, and template nesting beyond 32 levels return unknown. An ambiguous prefix can suppress completion later in the document until that prefix changes. This is conservative lexical recognition, not a JavaScript parser or formatter.
 
 ## Context menus and web links
 
@@ -178,6 +215,7 @@ SourceEditor uses AppKit for native interaction and Core Text for font layout, f
 | `SCEViewport` | Visible-line ranges | Fixed line height; visible lines plus six context lines on either side; independent of Core Text |
 | `SCELineLayoutCache` | Layout, hit testing, selection geometry | Creates `CTLine` objects on demand; invalidates intersecting lines and shifts subsequent cache entries after edits |
 | `SCEEditorView` | AppKit interaction and component integration | `NSTextInputClient`, standard editing commands, undo, mouse selection, and scrolling |
+| `SCELanguageConfiguration` | Language-specific editing rules | Immutable bracket pairs, independent context providers, bounded lexical recognition, and revision-checked checkpoints |
 | `SCESyntaxHighlighter` and `SCESyntaxTheme` | Highlighting interface and presentation | Semantic UTF-16 ranges, asynchronous revision checks, and separate parsing and color configuration |
 | `SourceEditorTreeSitter` | Optional JSON parsing | Upstream C runtime and grammar packages, incremental background parsing, and viewport capture queries |
 
@@ -196,7 +234,7 @@ Caches use logical line indices. Every edit adjusts both layouts and semantic st
 - Core Text rendering, system monospaced fonts, font fallback, and light and dark appearances.
 - Horizontal and vertical scrolling, fixed line numbers, current-line highlighting, and independent caret blinking.
 - A scope guide at the opening line's indentation for the innermost multiline `()`, `[]`, or `{}` pair that encloses the whole selection, or the caret when nothing is selected. As in Xcode, a selection shows one guide; selected brackets belong to the selection, so selecting a block's brackets moves the guide to the enclosing pair. The guide covers the lines between the brackets and fades in and out over 6 points at each end. `showsScopeGuide` defaults to `YES`.
-- Text insertion and deletion, tabs, newlines that inherit leading indentation, cut, copy, paste, undo, and redo.
+- Text insertion and deletion, configurable space or tab indentation, language-aware newlines and bracket completion, cut, copy, paste, undo, and redo.
 - Mouse drag selection, double-click word selection, triple-click or gutter line selection, and selection autoscrolling.
 - Native context menus with validated editing commands and delegate customization.
 - HTTP and HTTPS link recognition, Command-hover underlines, and Command-click browser opening.
@@ -219,6 +257,8 @@ The existing checks cover:
 
 - 12,000 randomized replacements compared with `NSMutableString`, followed by 3,000 insertions to exercise buffer growth, line indexing, range reads, and snapshot independence.
 - Emoji, combining marks, CRLF deletion, undo and redo, preferred-column vertical movement, indentation, and read-only mode.
+- Soft Tab stops, independent indentation and tab widths, literal-tab layout updates, JSON and JavaScript bracket completion, existing closer reuse, generated-edit undo, literal insertion during keyboard handling, and composition exclusions.
+- Custom bracket pairs and context providers, lexical escapes, comments, template expressions, regular expressions and division, bounded context reads, checkpoint reuse and invalidation, and independent snapshot identity.
 - Marked-text updates, selection replacement, commit, cancellation, composition undo and redo, input ranges, and screen-coordinate queries.
 - Scope-guide matching against an independent stack-based reference, randomized bracket sequences across chunk boundaries and scan limits, changes after edits, and rendered position and line coverage.
 - Core Text grapheme hit testing, tab advances, unchanged-line cache reuse, and selection changes without layout reconstruction.
