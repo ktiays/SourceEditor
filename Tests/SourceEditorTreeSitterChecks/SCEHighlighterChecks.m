@@ -1,4 +1,4 @@
-#import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 @import SourceEditorTreeSitter;
 
 static NSUInteger SCECheckCount;
@@ -175,6 +175,92 @@ static void SCECheckViewportAndIdentity(void) {
     puts("PASS viewport: 20k-line bounded queries, scrolling without reparsing, document identity, multiline scopes");
 }
 
+static void SCECheckMultipleRanges(void) {
+    NSMutableString *text = [NSMutableString stringWithString:@"[\n"];
+    for (NSUInteger i = 0; i < 20000; i++) {
+        [text appendFormat:@"{\"value%lu\": %lu},\n", (unsigned long)i, (unsigned long)i];
+    }
+    [text appendString:@"{\"long key string\": true}]\n"];
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:text];
+    SCETreeSitterHighlighter *highlighter = SCECreateHighlighter(SCETreeSitterLanguageJSON);
+    NSRange first = [buffer UTF16RangeOfLine:100 includingLineEnding:YES];
+    NSRange second = [buffer UTF16RangeOfLine:15000 includingLineEnding:YES];
+    // Two pieces of one string token on the last line.
+    NSRange key = [text rangeOfString:@"long key string"];
+    NSArray<NSValue *> *ranges = @[
+        [NSValue valueWithRange:first], [NSValue valueWithRange:second],
+        [NSValue valueWithRange:NSMakeRange(key.location, 3)], [NSValue valueWithRange:NSMakeRange(key.location + 6, 3)]
+    ];
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    __block SCESyntaxHighlightResult *result;
+    [highlighter highlightBuffer:buffer
+                     UTF16Ranges:ranges
+                       afterEdit:nil
+                      completion:^(SCESyntaxHighlightResult *value) {
+                          result = value;
+                          dispatch_semaphore_signal(done);
+                      }];
+    CHECK(dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)) == 0,
+          "multiple-range request must complete");
+    CHECK([result.coveredRanges isEqualToArray:ranges] &&
+              NSEqualRanges(result.coveredRange,
+                            NSMakeRange(first.location, NSMaxRange(ranges.lastObject.rangeValue) - first.location)),
+          "a multiple-range result must report the requested ranges and their bounds");
+    NSUInteger inFirst = 0;
+    NSUInteger inSecond = 0;
+    NSUInteger keyTokens = 0;
+    BOOL outside = NO;
+    for (SCESyntaxToken *token in result.tokens) {
+        BOOL intersects = NO;
+        for (NSValue *value in ranges) {
+            intersects = intersects || NSIntersectionRange(token.range, value.rangeValue).length > 0;
+        }
+        outside = outside || !intersects;
+        inFirst += NSIntersectionRange(token.range, first).length > 0;
+        inSecond += NSIntersectionRange(token.range, second).length > 0;
+        keyTokens += token.range.location == key.location - 1 && [token.kind isEqualToString:SCESyntaxTokenString];
+    }
+    CHECK(inFirst > 0 && inSecond > 0 && !outside, "tokens must come from every requested range and nowhere else");
+    CHECK(keyTokens == 1, "a token that spans several requested ranges must be reported once");
+    CHECK([SCEKindAt(result, key.location) isEqualToString:SCESyntaxTokenProperty],
+          "precedence must hold across a multiple-range result");
+    puts("PASS multiple ranges: disjoint queries, covered ranges, deduplicated spanning tokens, precedence");
+}
+
+// A minified document is one line with far more tokens than one result may
+// hold, so the editor must request only the visible part of the line.
+static void SCECheckLongLineEditor(void) {
+    [NSApplication sharedApplication];
+    NSMutableString *text = [NSMutableString stringWithString:@"["];
+    while (text.length < 2000000) {
+        [text appendFormat:@"{\"id\":%lu,\"name\":\"item\"},", (unsigned long)text.length];
+    }
+    [text appendString:@"{}]\n"];
+    NSScrollView *scroll = [SCEEditorView scrollableEditorView];
+    scroll.frame = NSMakeRect(0, 0, 800, 600);
+    SCEEditorView *editor = (SCEEditorView *)scroll.documentView;
+    editor.string = text;
+    __block NSUInteger updates = 0;
+    id observer =
+        [NSNotificationCenter.defaultCenter addObserverForName:SCEEditorSyntaxHighlightingDidUpdateNotification
+                                                        object:editor
+                                                         queue:nil
+                                                    usingBlock:^(NSNotification *note) {
+                                                        updates++;
+                                                    }];
+    editor.syntaxHighlighter = SCECreateHighlighter(SCETreeSitterLanguageJSON);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:30];
+    while (!updates && deadline.timeIntervalSinceNow > 0) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+    }
+    NSDictionary<NSNumber *, NSArray<SCESyntaxToken *> *> *tokens =
+        [[editor valueForKey:@"layoutCache"] valueForKey:@"syntaxTokens"];
+    CHECK(updates > 0 && tokens[@0].count > 0, "the visible part of a minified line must receive colors");
+    CHECK(NSMaxRange(tokens[@0].lastObject.range) < 100000, "colors must be computed only near the viewport");
+    [NSNotificationCenter.defaultCenter removeObserver:observer];
+    puts("PASS long-line editor: a 2 Mi-unit minified line is highlighted around the viewport");
+}
+
 static void SCECheckCoalescingAndCancellation(void) {
     SCETreeSitterHighlighter *highlighter = SCECreateHighlighter(SCETreeSitterLanguageJSON);
     dispatch_queue_t queue = [highlighter valueForKey:@"queue"];
@@ -238,6 +324,8 @@ void SCECheckTreeSitter(void) {
     SCECheckLanguages();
     SCECheckIncremental(SCETreeSitterLanguageJSON, @"{\r\n\"name\": \"\u4e2d\u6587\U0001f642\",\r\n\"n\": 1\r\n}");
     SCECheckViewportAndIdentity();
+    SCECheckMultipleRanges();
+    SCECheckLongLineEditor();
     SCECheckCoalescingAndCancellation();
     printf("All %lu Tree-sitter checks passed.\n", (unsigned long)SCECheckCount);
 }

@@ -26,7 +26,8 @@ typedef NS_ENUM(NSUInteger, SCEBracketCompletionMode) {
 FOUNDATION_EXPORT NSNotificationName const SCEEditorTextDidChangeNotification;
 FOUNDATION_EXPORT NSNotificationName const SCEEditorSelectionDidChangeNotification;
 FOUNDATION_EXPORT NSNotificationName const SCEEditorSyntaxHighlightingDidUpdateNotification;
-/// Posted on the main thread after the editor applies or clears search results.
+/// Posted on the main thread when search results change, including progress of a
+/// background search, at most once per main queue turn while it runs.
 FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotification;
 
 /// An AppKit document view that renders plain text with Core Text.
@@ -105,31 +106,36 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 @property (nonatomic, strong, nullable) id<SCESyntaxHighlighter> syntaxHighlighter;
 @property (nonatomic, copy) SCESyntaxTheme *syntaxTheme;
 
-/// The query whose matches the editor highlights, or nil. Setting a query starts
-/// a search of a buffer snapshot on a private serial queue; results are applied
-/// on the main thread only when the document revision is unchanged. After each
-/// edit, existing matches outside the edited range move with the text and a new
-/// search starts. Previous matches stay visible until new results arrive.
+/// The query whose matches the editor highlights, or nil. Setting a query searches
+/// the visible lines immediately when they are short, then searches the rest of
+/// the document in chunks on background queues, starting after the viewport.
+/// When the query cannot match across lines, an edit searches only the edited
+/// lines again and moves later matches with the text. A query that can match
+/// across lines is searched as a whole document after each edit; until then,
+/// matches outside the edited range move with the text.
 @property (nonatomic, copy, nullable) SCETextSearchQuery *searchQuery;
-/// YES while a search for the current query and document revision is in progress.
+/// YES while part of the document remains unsearched and searching continues.
 @property (nonatomic, readonly, getter=isSearchPending) BOOL searchPending;
-/// The error from the latest search, such as an invalid regular expression.
+/// The pattern error of the current query, such as an invalid regular expression.
 @property (nonatomic, readonly, nullable) NSError *searchError;
-/// The number of highlighted matches, at most SCETextSearchDefaultMaximumMatchCount.
+/// The number of known matches. Background searching stops once at least
+/// SCETextSearchDefaultMaximumMatchCount matches are known.
 @property (nonatomic, readonly) NSUInteger numberOfSearchMatches;
-/// YES when the latest search stopped at SCETextSearchDefaultMaximumMatchCount.
+/// YES when background searching stopped at SCETextSearchDefaultMaximumMatchCount
+/// with text left unsearched, so the match count is incomplete.
 @property (nonatomic, readonly, getter=isSearchResultTruncated) BOOL searchResultTruncated;
-/// The highlighted matches in document order. Building the array is O(match count).
+/// The known matches in document order. Building the array is O(match count).
 @property (nonatomic, readonly, copy) NSArray<NSValue *> *searchMatchRanges;
 /// The index of the match equal to the selected range, or NSNotFound.
 @property (nonatomic, readonly) NSUInteger currentSearchMatchIndex;
 
 /// Selects and scrolls to the match after the selection, wrapping to the first
-/// match. When results are pending, searches synchronously first. Returns NO and
-/// keeps the selection when there are no matches.
+/// match. Unsearched text between the selection and that match is searched
+/// synchronously first. Returns NO and keeps the selection when there are no matches.
 - (BOOL)selectNextSearchMatch;
 
-/// Selects and scrolls to the match before the selection, wrapping to the last match.
+/// Selects and scrolls to the match before the selection, wrapping to the last
+/// match. Unsearched text between them is searched synchronously first.
 - (BOOL)selectPreviousSearchMatch;
 
 /// O(1) immutable-node snapshot. The returned buffer can be edited independently.

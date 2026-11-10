@@ -8,6 +8,7 @@
 #import "SCEInteractionChecks.h"
 #import "SCEEditingChecks.h"
 #import "SCELargeDocumentChecks.h"
+#import "SCESearchChecks.h"
 
 @interface SCEEditorView (SelectionRenderingChecks)
 - (void)drawBackgroundSurface:(NSView *)surface;
@@ -883,9 +884,9 @@ static void SCECheckEditorSearch(void) {
                                                                   notifications++;
                                                               }];
     editor.searchQuery = [[SCETextSearchQuery alloc] initWithPattern:@"beta" options:0];
-    CHECK(editor.isSearchPending && editor.numberOfSearchMatches == 0, "a new query must start a pending search");
-    CHECK(SCEWaitForSearchResults(editor), "background search must complete");
-    CHECK(notifications == 1, "applying background results must post one notification");
+    CHECK(!editor.isSearchPending && editor.numberOfSearchMatches == 3,
+          "a query must search a short document synchronously");
+    CHECK(SCEWaitForSearchResults(editor) && notifications == 1, "setting a query must post one notification");
     CHECK(SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(6, 4), SCE_RANGE(11, 4), SCE_RANGE(28, 4) ]),
           "editor matches differ from the query result");
     CHECK(editor.currentSearchMatchIndex == NSNotFound, "a caret must not be reported as a current match");
@@ -901,20 +902,16 @@ static void SCECheckEditorSearch(void) {
     CHECK([editor selectPreviousSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(11, 4)),
           "previous match must precede the current match");
 
-    // Insert two characters at the start of line 1: earlier matches stay,
-    // later matches move, and the intersecting match is removed.
+    // Insert two characters inside the match on line 1: earlier matches stay,
+    // later matches move, and the edited line is searched again immediately.
     editor.selectedRange = NSMakeRange(12, 0);
     [editor insertText:@"XY" replacementRange:NSMakeRange(NSNotFound, 0)];
-    CHECK(editor.isSearchPending, "an edit must mark search results as pending");
-    CHECK(SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(6, 4), SCE_RANGE(30, 4) ]),
-          "matches must move with the text until new results arrive");
-    CHECK(SCEWaitForSearchResults(editor), "search after an edit must complete");
-    CHECK(SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(6, 4), SCE_RANGE(30, 4) ]),
-          "search after an edit must not match the split word");
+    CHECK(!editor.isSearchPending && SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(6, 4), SCE_RANGE(30, 4) ]),
+          "an edit must search the edited line synchronously and move later matches");
     [editor insertText:@"beta " replacementRange:NSMakeRange(0, 0)];
     CHECK([editor selectNextSearchMatch] && NSEqualRanges(editor.selectedRange, NSMakeRange(11, 4)),
-          "navigation must search synchronously while results are pending");
-    CHECK(!editor.isSearchPending && editor.numberOfSearchMatches == 3, "synchronous search must apply results");
+          "navigation must find matches in edited text");
+    CHECK(!editor.isSearchPending && editor.numberOfSearchMatches == 3, "edited text must be searched");
 
     editor.searchQuery = [[SCETextSearchQuery alloc] initWithPattern:@"[" options:SCETextSearchOptionRegularExpression];
     CHECK(SCEWaitForSearchResults(editor) && editor.searchError && editor.numberOfSearchMatches == 0,
@@ -953,9 +950,9 @@ static void SCECheckEditorSearch(void) {
     free(highlighted);
     CHECK(changed > 0, "search matches must be highlighted");
     CHECK(contained, "match highlights must stay within the matching line");
-    editor.string = @"replaced";
-    CHECK(editor.numberOfSearchMatches == 0 && editor.isSearchPending, "replacing the document must clear matches");
-    CHECK(SCEWaitForSearchResults(editor) && editor.numberOfSearchMatches == 0, "new document search differs");
+    editor.string = @"replaced target";
+    CHECK(SCERangesEqual(editor.searchMatchRanges, @[ SCE_RANGE(9, 6) ]) && !editor.isSearchPending,
+          "replacing the document must search the new text");
     [NSNotificationCenter.defaultCenter removeObserver:observer];
     puts("PASS editor search: background results, navigation and wrapping, edits, errors, highlight rendering");
 }
@@ -1007,8 +1004,10 @@ int main(int argc, const char *argv[]) {
         SCECheckCount += SCECheckSyntaxCore();
         SCECheckCount += SCECheckConfiguredEditing();
         SCECheckCount += SCECheckLargeDocuments();
+        SCECheckCount += SCECheckIncrementalSearch();
         SCEBenchmark();
         SCEBenchmarkLargeDocuments();
+        SCEBenchmarkSearch();
         printf("All %lu checks passed.\n", (unsigned long)SCECheckCount);
     }
     return 0;

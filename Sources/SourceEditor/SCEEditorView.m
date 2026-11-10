@@ -3,7 +3,8 @@
 #import "SCEViewport.h"
 #import "SCESelectionPath.h"
 #import "SCEBracketScope.h"
-#import "SCETextSearchMatching.h"
+#import "SCETextSearchSession.h"
+#import "SCEEditorViewInternal.h"
 #import "SCELanguageConfigurationInternal.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
@@ -24,52 +25,18 @@ static const CGFloat SCEScopeGuideWidth = 1;
 // The distance, in points, over which each end of the scope guide fades in.
 static const CGFloat SCEScopeGuideFadeLength = 6;
 static const CGFloat SCESearchMatchCornerRadius = 3;
+// The lines highlighted and retained around the viewport extend at least this
+// many lines beyond each side of it.
+static const NSUInteger SCESyntaxPrefetchMinimumLineCount = 32;
+// Prefetching around the viewport requests at most this many UTF-16 code units
+// beyond the viewport, half above and half below it.
+static const NSUInteger SCESyntaxPrefetchLength = 1 << 15;
 // Link detection on a longer line scans this many UTF-16 units on each side of
 // the pointer instead of the whole line.
 static const NSUInteger SCELinkDetectionRadius = 2048;
 // Grapheme and word navigation reads this many UTF-16 units on each side of the
 // caret instead of the whole line. Clusters longer than this are split.
 static const NSUInteger SCENavigationReadRadius = 256;
-
-// Returns the index of the first range whose location is at least offset.
-// Ranges must be sorted and non-overlapping.
-static NSUInteger SCEIndexOfFirstRangeStartingAtOrAfter(const NSRange *ranges, NSUInteger count, NSUInteger offset) {
-    NSUInteger low = 0;
-    NSUInteger high = count;
-    while (low < high) {
-        NSUInteger middle = low + (high - low) / 2;
-        if (ranges[middle].location < offset) {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    return low;
-}
-
-// Returns the index of the first range that ends after offset. Sorted,
-// non-overlapping ranges also have increasing end offsets.
-static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInteger count, NSUInteger offset) {
-    NSUInteger low = 0;
-    NSUInteger high = count;
-    while (low < high) {
-        NSUInteger middle = low + (high - low) / 2;
-        if (NSMaxRange(ranges[middle]) <= offset) {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    return low;
-}
-
-// Cancellation state shared between the main thread and the search queue.
-@interface SCETextSearchRequest : NSObject
-@property (atomic, getter=isCancelled) BOOL cancelled;
-@end
-
-@implementation SCETextSearchRequest
-@end
 
 @interface SCEEditorView (SurfaceDrawing)
 - (void)drawTextSurface:(NSView *)surface;
@@ -114,6 +81,9 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 
 @end
 
+@interface SCEEditorView () <SCETextSearchSessionDelegate>
+@end
+
 @implementation SCEEditorView {
     SCETextBuffer *_buffer;
     SCELineLayoutCache *_layoutCache;
@@ -151,10 +121,15 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     NSRange _dragInitialRange;
     NSEvent *_lastDragEvent;
     SCETextEdit *_pendingSyntaxEdit;
-    NSUInteger _syntaxRequestID;
+    // Incremented when highlighting restarts, so that late results are ignored.
+    NSUInteger _syntaxGeneration;
     NSUInteger _requestedSyntaxRevision;
-    NSRange _requestedSyntaxRange;
+    NSArray<NSValue *> *_requestedSyntaxRanges;
     BOOL _hasSyntaxRequest;
+    // UTF-16 ranges whose syntax tokens in the layout cache are current for
+    // _syntaxCoverageRevision. Scrolling within them needs no request.
+    NSArray<NSValue *> *_syntaxCoverage;
+    NSUInteger _syntaxCoverageRevision;
     // Enclosing bracket scope of the caret, cached by document revision and head.
     NSRange _scopeGuideBrackets;
     NSUInteger _scopeGuideOpenLine;
@@ -163,13 +138,9 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     NSRange _scopeGuideSelection;
     BOOL _hasScopeGuideState;
     CGFloat _scopeGuideX;
-    // Search matches are packed NSRange values in document order. Edits move or
-    // remove them immediately; a background search then replaces them.
-    dispatch_queue_t _searchQueue;
-    NSMutableData *_searchMatchData;
-    SCETextSearchRequest *_searchRequest;
-    NSUInteger _searchRequestID;
-    BOOL _searchUpdateScheduled;
+    // Matches of searchQuery. The session searches the viewport first and the
+    // rest of the document lazily, and updates only edited lines after an edit.
+    SCETextSearchSession *_searchSession;
     NSTrackingArea *_linkTrackingArea;
     id _modifierFlagsMonitor;
     NSDataDetector *_linkDetector;
@@ -230,10 +201,6 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     _tabWidth = 4;
     _preferredX = NAN;
     _markedRange = NSMakeRange(NSNotFound, 0);
-    _searchMatchData = [NSMutableData data];
-    _searchQueue = dispatch_queue_create(
-        "SourceEditor.SCEEditorView.search",
-        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
     _editUndoManager = [[NSUndoManager alloc] init];
     _editUndoManager.groupsByEvent = NO;
     _editUndoManager.levelsOfUndo = 1000;
@@ -270,7 +237,7 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     if ([_syntaxHighlighter respondsToSelector:@selector(cancelPendingRequests)]) {
         [_syntaxHighlighter cancelPendingRequests];
     }
-    _searchRequest.cancelled = YES;
+    [_searchSession invalidate];
     [_autoscrollTimer invalidate];
     for (id token in @[
              _clipBoundsObserver ?: NSNull.null, _clipFrameObserver ?: NSNull.null, _windowKeyObserver ?: NSNull.null,
@@ -501,7 +468,10 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
                                               lineHeight:_lineHeight
                                                 topInset:SCEInset
                                                 overscan:6];
-    [_layoutCache retainLinesInRange:lines];
+    NSRange prefetchLines = [self syntaxPrefetchLineRangeAroundLines:lines];
+    [_layoutCache retainLinesInRange:lines syntaxTokensInLineRange:prefetchLines];
+    [self limitSyntaxCoverageToLines:prefetchLines];
+    _searchSession.priorityLineRange = lines;
     // Long lines report an estimate for their unmeasured fragments, so sizing the
     // document never lays out text outside the viewport.
     for (NSUInteger i = lines.location; i < NSMaxRange(lines); i++) {
@@ -536,8 +506,9 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
         [_syntaxHighlighter cancelPendingRequests];
     }
     _syntaxHighlighter = syntaxHighlighter;
-    _syntaxRequestID++;
+    _syntaxGeneration++;
     _hasSyntaxRequest = NO;
+    _syntaxCoverage = nil;
     [_layoutCache removeAllSyntaxTokens];
     [self updateViewport];
 }
@@ -578,51 +549,224 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     return [self themeColor:SCEEditorColorBackground fallback:NSColor.textBackgroundColor];
 }
 
-- (void)requestSyntaxHighlightingForLines:(NSRange)lines edit:(SCETextEdit *)edit {
-    id<SCESyntaxHighlighter> highlighter = _syntaxHighlighter;
-    if (!highlighter) {
+// MARK: Syntax highlighting requests
+
+- (NSRange)syntaxPrefetchLineRangeAroundLines:(NSRange)lines {
+    NSUInteger extra = MAX(lines.length, SCESyntaxPrefetchMinimumLineCount);
+    NSUInteger start = lines.location > extra ? lines.location - extra : 0;
+    NSUInteger end = MIN(_buffer.lineCount, NSMaxRange(lines) + extra);
+    return NSMakeRange(start, MAX(end, start) - start);
+}
+
+// Appends range to ranges, merging it with the last range when they touch.
+static void SCEAppendSyntaxRange(NSMutableArray<NSValue *> *ranges, NSRange range) {
+    NSRange last = ranges.lastObject.rangeValue;
+    if (ranges.count && NSMaxRange(last) == range.location) {
+        ranges[ranges.count - 1] =
+            [NSValue valueWithRange:NSMakeRange(last.location, NSMaxRange(range) - last.location)];
+    } else if (range.length) {
+        [ranges addObject:[NSValue valueWithRange:range]];
+    }
+}
+
+// Returns disjoint UTF-16 ranges in document order that cover lines, including
+// their line endings. A line laid out in fragments contributes only the text
+// within one viewport width of the visible text area when includesLongLines is
+// YES, and nothing otherwise, so that the request does not grow with line length.
+- (NSMutableArray<NSValue *> *)syntaxRangesForLines:(NSRange)lines includingLongLines:(BOOL)includesLongLines {
+    NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
+    CGFloat margin = NSWidth(_viewportRect);
+    CGFloat minimumX = MAX(0, self.visibleLineMinimumX - margin);
+    CGFloat maximumX = self.visibleLineMaximumX + margin;
+    for (NSUInteger line = lines.location; line < NSMaxRange(lines); line++) {
+        NSRange whole = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
+        NSRange piece = whole;
+        NSUInteger contentLength = [_buffer UTF16RangeOfLine:line includingLineEnding:NO].length;
+        if (contentLength > SCELineLayoutMaximumUnfragmentedLength) {
+            if (!includesLongLines) {
+                continue;
+            }
+            // Visible lines already have layouts measured through the viewport.
+            SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
+            NSUInteger start = [layout UTF16IndexForX:minimumX];
+            NSUInteger end = [layout UTF16IndexForX:maximumX];
+            if (end >= contentLength) {
+                end = whole.length;
+            }
+            piece = NSMakeRange(whole.location + start, end > start ? end - start : 0);
+        }
+        SCEAppendSyntaxRange(ranges, piece);
+    }
+    return ranges;
+}
+
+// Returns the lines next to lines in the given direction whose short-line text
+// fits in length, up to count lines.
+- (NSRange)syntaxPrefetchLinesAdjacentToLines:(NSRange)lines
+                                    downwards:(BOOL)downwards
+                                        count:(NSUInteger)count
+                                       length:(NSUInteger)length {
+    NSUInteger taken = 0;
+    NSUInteger total = 0;
+    NSUInteger lineCount = _buffer.lineCount;
+    while (taken < count) {
+        NSUInteger line = downwards ? NSMaxRange(lines) + taken : lines.location - taken - 1;
+        if ((downwards && line >= lineCount) || (!downwards && lines.location <= taken)) {
+            break;
+        }
+        NSUInteger lineLength = [_buffer UTF16RangeOfLine:line includingLineEnding:YES].length;
+        if (lineLength <= SCELineLayoutMaximumUnfragmentedLength) {
+            if (total + lineLength > length) {
+                break;
+            }
+            total += lineLength;
+        }
+        taken++;
+    }
+    return downwards ? NSMakeRange(NSMaxRange(lines), taken) : NSMakeRange(lines.location - taken, taken);
+}
+
+- (BOOL)syntaxCoverageContainsRanges:(NSArray<NSValue *> *)ranges {
+    if (!_syntaxCoverage || _syntaxCoverageRevision != _buffer.revision) {
+        return NO;
+    }
+    for (NSValue *value in ranges) {
+        NSRange range = value.rangeValue;
+        BOOL contained = NO;
+        for (NSValue *coveredValue in _syntaxCoverage) {
+            NSRange covered = coveredValue.rangeValue;
+            if (covered.location <= range.location && NSMaxRange(range) <= NSMaxRange(covered)) {
+                contained = YES;
+                break;
+            }
+        }
+        if (!contained) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+// Keeps only the coverage within lines, whose tokens the layout cache retains.
+- (void)limitSyntaxCoverageToLines:(NSRange)lines {
+    if (!_syntaxCoverage) {
         return;
     }
-    NSRange range = NSMakeRange(0, 0);
-    if (lines.length) {
-        NSRange first = [_buffer UTF16RangeOfLine:lines.location includingLineEnding:YES];
-        NSRange last = [_buffer UTF16RangeOfLine:NSMaxRange(lines) - 1 includingLineEnding:YES];
-        range = NSMakeRange(first.location, NSMaxRange(last) - first.location);
+    if (!lines.length) {
+        _syntaxCoverage = nil;
+        return;
+    }
+    NSUInteger start = [_buffer UTF16RangeOfLine:lines.location includingLineEnding:YES].location;
+    NSUInteger end = NSMaxRange([_buffer UTF16RangeOfLine:NSMaxRange(lines) - 1 includingLineEnding:YES]);
+    NSRange retained = NSMakeRange(start, end - start);
+    NSMutableArray<NSValue *> *coverage = [NSMutableArray array];
+    for (NSValue *value in _syntaxCoverage) {
+        NSRange covered = NSIntersectionRange(value.rangeValue, retained);
+        if (covered.length) {
+            [coverage addObject:[NSValue valueWithRange:covered]];
+        }
+    }
+    _syntaxCoverage = coverage;
+}
+
+// Requests the viewport first. Once its colors are current, requests the region
+// around it so that scrolling nearby shows colors without waiting.
+- (void)requestSyntaxHighlightingForLines:(NSRange)lines edit:(SCETextEdit *)edit {
+    if (!_syntaxHighlighter) {
+        return;
+    }
+    NSArray<NSValue *> *ranges = [self syntaxRangesForLines:lines includingLongLines:YES];
+    if (!edit && [self syntaxCoverageContainsRanges:ranges]) {
+        [self requestSyntaxPrefetchAroundLines:lines visibleRanges:ranges];
+        return;
+    }
+    [self requestSyntaxHighlightingForRanges:ranges edit:edit];
+}
+
+- (void)requestSyntaxPrefetchAroundLines:(NSRange)lines visibleRanges:(NSArray<NSValue *> *)visibleRanges {
+    NSUInteger count = MAX(lines.length, SCESyntaxPrefetchMinimumLineCount);
+    NSRange above = [self syntaxPrefetchLinesAdjacentToLines:lines
+                                                   downwards:NO
+                                                       count:count
+                                                      length:SCESyntaxPrefetchLength / 2];
+    NSRange below = [self syntaxPrefetchLinesAdjacentToLines:lines
+                                                   downwards:YES
+                                                       count:count
+                                                      length:SCESyntaxPrefetchLength / 2];
+    NSMutableArray<NSValue *> *ranges = [self syntaxRangesForLines:above includingLongLines:NO];
+    for (NSValue *value in visibleRanges) {
+        SCEAppendSyntaxRange(ranges, value.rangeValue);
+    }
+    for (NSValue *value in [self syntaxRangesForLines:below includingLongLines:NO]) {
+        SCEAppendSyntaxRange(ranges, value.rangeValue);
+    }
+    if (![self syntaxCoverageContainsRanges:ranges]) {
+        [self requestSyntaxHighlightingForRanges:ranges edit:nil];
+    }
+}
+
+- (void)requestSyntaxHighlightingForRanges:(NSArray<NSValue *> *)ranges edit:(SCETextEdit *)edit {
+    id<SCESyntaxHighlighter> highlighter = _syntaxHighlighter;
+    BOOL requestsRanges = ranges.count > 1 &&
+                          [highlighter respondsToSelector:@selector(highlightBuffer:UTF16Ranges:afterEdit:completion:)];
+    if (!requestsRanges) {
+        NSUInteger start = ranges.count ? ranges.firstObject.rangeValue.location : 0;
+        NSUInteger end = ranges.count ? NSMaxRange(ranges.lastObject.rangeValue) : 0;
+        ranges = @[ [NSValue valueWithRange:NSMakeRange(start, end - start)] ];
     }
     if (!edit && _hasSyntaxRequest && _requestedSyntaxRevision == _buffer.revision &&
-        NSEqualRanges(range, _requestedSyntaxRange)) {
+        [ranges isEqualToArray:_requestedSyntaxRanges]) {
         return;
     }
     _hasSyntaxRequest = YES;
     _requestedSyntaxRevision = _buffer.revision;
-    _requestedSyntaxRange = range;
-    NSUInteger requestID = ++_syntaxRequestID;
+    _requestedSyntaxRanges = [ranges copy];
+    NSUInteger generation = _syntaxGeneration;
     SCETextBuffer *snapshot = [_buffer copy];
+    NSArray<NSValue *> *requestedRanges = _requestedSyntaxRanges;
     __weak SCEEditorView *weakSelf = self;
-    [highlighter highlightBuffer:snapshot
-                      UTF16Range:range
-                       afterEdit:edit
-                      completion:^(SCESyntaxHighlightResult *result) {
-                          dispatch_async(dispatch_get_main_queue(), ^{
-                              SCEEditorView *editor = weakSelf;
-                              if (!editor || editor->_syntaxRequestID != requestID ||
-                                  editor->_buffer.revision != snapshot.revision) {
-                                  return;
-                              }
-                              // A nil result carries no highlight information, so the
-                              // current colors remain instead of being cleared.
-                              if (!result || result.revision != snapshot.revision ||
-                                  !NSEqualRanges(result.coveredRange, range)) {
-                                  return;
-                              }
-                              if ([editor->_layoutCache applySyntaxTokens:result.tokens toLineRange:lines]) {
-                                  editor->_textSurface.needsDisplay = YES;
-                              }
-                              [NSNotificationCenter.defaultCenter
-                                  postNotificationName:SCEEditorSyntaxHighlightingDidUpdateNotification
-                                                object:editor];
-                          });
-                      }];
+    SCESyntaxHighlightCompletion completion = ^(SCESyntaxHighlightResult *result) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf applySyntaxHighlightResult:result
+                                       forRanges:requestedRanges
+                                        snapshot:snapshot
+                                      generation:generation];
+        });
+    };
+    if (requestsRanges) {
+        [highlighter highlightBuffer:snapshot UTF16Ranges:ranges afterEdit:edit completion:completion];
+    } else {
+        [highlighter highlightBuffer:snapshot UTF16Range:ranges[0].rangeValue afterEdit:edit completion:completion];
+    }
+}
+
+// Applies any result for the current revision, even when a later request
+// superseded its request: its tokens are still correct for the text.
+- (void)applySyntaxHighlightResult:(SCESyntaxHighlightResult *)result
+                         forRanges:(NSArray<NSValue *> *)ranges
+                          snapshot:(SCETextBuffer *)snapshot
+                        generation:(NSUInteger)generation {
+    if (generation != _syntaxGeneration || _buffer.revision != snapshot.revision) {
+        return;
+    }
+    // A nil result carries no highlight information, so the current colors
+    // remain instead of being cleared.
+    if (!result || result.revision != snapshot.revision || ![result.coveredRanges isEqualToArray:ranges]) {
+        return;
+    }
+    if ([_layoutCache applySyntaxTokens:result.tokens toUTF16Ranges:ranges]) {
+        _textSurface.needsDisplay = YES;
+    }
+    _syntaxCoverage = ranges;
+    _syntaxCoverageRevision = snapshot.revision;
+    [NSNotificationCenter.defaultCenter postNotificationName:SCEEditorSyntaxHighlightingDidUpdateNotification
+                                                      object:self];
+    NSRange lines = [SCEViewport lineRangeForVisibleRect:_viewportRect
+                                               lineCount:_buffer.lineCount
+                                              lineHeight:_lineHeight
+                                                topInset:SCEInset
+                                                overscan:6];
+    [self requestSyntaxHighlightingForLines:lines edit:nil];
 }
 
 - (void)resetCursorRects {
@@ -666,6 +810,9 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 // Replaces the whole document and resets selection, undo, and derived state.
 - (void)resetDocumentUsingReplacement:(void (^)(SCETextBuffer *buffer))replacement {
     [self invalidateDetectedLinks];
+    // The session's state describes the previous text; restartSearch replaces it
+    // after the viewport reflects the new text.
+    [_searchSession invalidate];
     SCETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
     _markedRange = NSMakeRange(NSNotFound, 0);
     _compositionOriginalText = nil;
@@ -681,13 +828,13 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     [_generatedClosingOffsets removeAllIndexes];
     [_layoutCache removeAllLayouts];
     [_layoutCache removeAllSyntaxTokens];
-    _searchMatchData.length = 0;
-    [self setNeedsSearchUpdate];
+    _syntaxCoverage = nil;
     _maximumMeasuredWidth = 0;
     _head = 0;
     _anchor = _head;
     _preferredX = NAN;
     [self updateViewport];
+    [self restartSearch];
     [self scrollPoint:NSZeroPoint];
     [self selectionDidChange];
     [NSNotificationCenter.defaultCenter postNotificationName:SCEEditorTextDidChangeNotification object:self];
@@ -1207,135 +1354,63 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
         return;
     }
     _searchQuery = [searchQuery copy];
+    [self restartSearch];
+}
+
+// Replaces the search session for the current query and document. The new
+// session searches the viewport synchronously when it is short, so its matches
+// are drawn without waiting for a background queue.
+- (void)restartSearch {
+    [_searchSession invalidate];
+    _searchSession = nil;
     if (_searchQuery) {
-        [self setNeedsSearchUpdate];
-        return;
+        NSRange lines = [SCEViewport lineRangeForVisibleRect:_viewportRect
+                                                   lineCount:_buffer.lineCount
+                                                  lineHeight:_lineHeight
+                                                    topInset:SCEInset
+                                                    overscan:6];
+        _searchSession = [[SCETextSearchSession alloc] initWithQuery:_searchQuery
+                                                              buffer:_buffer
+                                                   priorityLineRange:lines
+                                                            delegate:self];
     }
-    [self cancelSearchRequest];
-    _searchPending = NO;
-    _searchError = nil;
-    _searchResultTruncated = NO;
-    _searchMatchData.length = 0;
     _backgroundSurface.needsDisplay = YES;
     [NSNotificationCenter.defaultCenter postNotificationName:SCEEditorSearchResultsDidChangeNotification object:self];
 }
 
-- (void)cancelSearchRequest {
-    _searchRequest.cancelled = YES;
-    _searchRequest = nil;
-    _searchRequestID++;
-}
-
-// Marks the results stale and starts one search after the current event, so
-// that several edits in one event produce one search.
-- (void)setNeedsSearchUpdate {
-    if (!_searchQuery) {
+- (void)textSearchSession:(SCETextSearchSession *)session didUpdateMatchesInLineRange:(NSRange)lineRange {
+    if (session != _searchSession) {
         return;
     }
-    [self cancelSearchRequest];
-    _searchPending = YES;
-    if (_searchUpdateScheduled) {
-        return;
+    NSRange visible = [SCEViewport lineRangeForVisibleRect:_viewportRect
+                                                 lineCount:_buffer.lineCount
+                                                lineHeight:_lineHeight
+                                                  topInset:SCEInset
+                                                  overscan:0];
+    if (NSIntersectionRange(lineRange, visible).length) {
+        _backgroundSurface.needsDisplay = YES;
     }
-    _searchUpdateScheduled = YES;
-    __weak SCEEditorView *weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        SCEEditorView *editor = weakSelf;
-        if (!editor) {
-            return;
-        }
-        editor->_searchUpdateScheduled = NO;
-        if (editor->_searchPending && editor->_searchQuery && !editor->_searchRequest) {
-            [editor startSearchRequest];
-        }
-    });
-}
-
-- (void)startSearchRequest {
-    [self cancelSearchRequest];
-    SCETextSearchRequest *request = [[SCETextSearchRequest alloc] init];
-    _searchRequest = request;
-    NSUInteger requestID = _searchRequestID;
-    SCETextSearchQuery *query = _searchQuery;
-    SCETextBuffer *snapshot = [_buffer copy];
-    __weak SCEEditorView *weakSelf = self;
-    dispatch_async(_searchQueue, ^{
-        if (request.isCancelled) {
-            return;
-        }
-        NSError *error = nil;
-        NSData *matches = [query rangeDataOfMatchesInString:snapshot.string
-                                               maximumCount:SCETextSearchDefaultMaximumMatchCount
-                                                isCancelled:^BOOL {
-                                                    return request.isCancelled;
-                                                }
-                                                      error:&error];
-        if (!matches && !error) {
-            return;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            SCEEditorView *editor = weakSelf;
-            if (!editor || editor->_searchRequestID != requestID || editor->_buffer.revision != snapshot.revision) {
-                return;
-            }
-            [editor applySearchMatchData:matches error:error];
-        });
-    });
-}
-
-- (void)applySearchMatchData:(NSData *)matches error:(NSError *)error {
-    _searchRequest = nil;
-    _searchPending = NO;
-    _searchError = error;
-    _searchMatchData = matches ? [matches mutableCopy] : [NSMutableData data];
-    _searchResultTruncated = self.numberOfSearchMatches >= SCETextSearchDefaultMaximumMatchCount;
-    _backgroundSurface.needsDisplay = YES;
     [NSNotificationCenter.defaultCenter postNotificationName:SCEEditorSearchResultsDidChangeNotification object:self];
 }
 
-// Navigation needs results for the current text, so a pending search runs
-// synchronously on the main thread instead of waiting for the search queue.
-- (void)updateSearchResultsIfNeeded {
-    if (!_searchPending || !_searchQuery) {
-        return;
-    }
-    [self cancelSearchRequest];
-    NSError *error = nil;
-    NSData *matches = [_searchQuery rangeDataOfMatchesInString:_buffer.string
-                                                  maximumCount:SCETextSearchDefaultMaximumMatchCount
-                                                   isCancelled:nil
-                                                         error:&error];
-    [self applySearchMatchData:matches error:error];
+- (BOOL)isSearchPending {
+    return _searchSession.isSearching;
 }
 
-// Keeps unaffected matches aligned with the text until new results arrive.
-// Matches that intersect the replaced range are removed.
-- (void)moveSearchMatchesForReplacementOfUTF16Range:(NSRange)range replacementLength:(NSUInteger)replacementLength {
-    if (!_searchQuery) {
-        return;
-    }
-    NSRange *matches = _searchMatchData.mutableBytes;
-    NSUInteger count = _searchMatchData.length / sizeof(NSRange);
-    NSUInteger retainedCount = 0;
-    for (NSUInteger index = 0; index < count; index++) {
-        NSRange match = matches[index];
-        if (NSMaxRange(match) <= range.location) {
-            matches[retainedCount++] = match;
-        } else if (match.location >= NSMaxRange(range)) {
-            match.location = match.location - range.length + replacementLength;
-            matches[retainedCount++] = match;
-        }
-    }
-    _searchMatchData.length = retainedCount * sizeof(NSRange);
-    [self setNeedsSearchUpdate];
+- (NSError *)searchError {
+    return _searchSession.error;
+}
+
+- (BOOL)isSearchResultTruncated {
+    return _searchSession.isTruncated;
 }
 
 - (NSUInteger)numberOfSearchMatches {
-    return _searchMatchData.length / sizeof(NSRange);
+    return _searchSession.numberOfMatches;
 }
 
 - (NSArray<NSValue *> *)searchMatchRanges {
-    const NSRange *matches = _searchMatchData.bytes;
+    const NSRange *matches = _searchSession.matchRanges;
     NSUInteger count = self.numberOfSearchMatches;
     NSMutableArray<NSValue *> *values = [NSMutableArray arrayWithCapacity:count];
     for (NSUInteger index = 0; index < count; index++) {
@@ -1349,36 +1424,37 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     if (!selection.length) {
         return NSNotFound;
     }
-    const NSRange *matches = _searchMatchData.bytes;
+    const NSRange *matches = _searchSession.matchRanges;
     NSUInteger count = self.numberOfSearchMatches;
     NSUInteger index = SCEIndexOfFirstRangeStartingAtOrAfter(matches, count, selection.location);
     return index < count && NSEqualRanges(matches[index], selection) ? index : NSNotFound;
 }
 
+- (NSUInteger)searchOffsetAfterSelection {
+    NSRange selection = self.selectedRange;
+    return selection.length ? NSMaxRange(selection) : selection.location;
+}
+
 - (BOOL)selectNextSearchMatch {
-    [self updateSearchResultsIfNeeded];
-    NSUInteger count = self.numberOfSearchMatches;
-    if (!count) {
+    NSUInteger index = [_searchSession indexOfNextMatchFromUTF16Offset:self.searchOffsetAfterSelection];
+    if (index == NSNotFound) {
         return NO;
     }
-    const NSRange *matches = _searchMatchData.bytes;
-    NSRange selection = self.selectedRange;
-    NSUInteger offset = selection.length ? NSMaxRange(selection) : selection.location;
-    NSUInteger index = SCEIndexOfFirstRangeStartingAtOrAfter(matches, count, offset);
-    self.selectedRange = matches[index < count ? index : 0];
+    self.selectedRange = _searchSession.matchRanges[index];
     return YES;
 }
 
 - (BOOL)selectPreviousSearchMatch {
-    [self updateSearchResultsIfNeeded];
-    NSUInteger count = self.numberOfSearchMatches;
-    if (!count) {
+    NSUInteger index = [_searchSession indexOfPreviousMatchBeforeUTF16Offset:self.selectedRange.location];
+    if (index == NSNotFound) {
         return NO;
     }
-    const NSRange *matches = _searchMatchData.bytes;
-    NSUInteger index = SCEIndexOfFirstRangeEndingAfter(matches, count, self.selectedRange.location);
-    self.selectedRange = matches[index > 0 ? index - 1 : count - 1];
+    self.selectedRange = _searchSession.matchRanges[index];
     return YES;
+}
+
+- (BOOL)canSelectNextSearchMatchFromUTF16OffsetWithoutSearching:(NSUInteger)offset {
+    return !_searchSession || [_searchSession canLocateNextMatchFromUTF16OffsetWithoutSearching:offset];
 }
 
 // Highlights the matches on visible lines. Each line is located with a binary
@@ -1388,7 +1464,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     if (!count) {
         return;
     }
-    const NSRange *matches = _searchMatchData.bytes;
+    const NSRange *matches = _searchSession.matchRanges;
     NSRange visible = [SCEViewport lineRangeForVisibleRect:_viewportRect
                                                  lineCount:_buffer.lineCount
                                                 lineHeight:_lineHeight
@@ -1517,7 +1593,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
                                                     afterBuffer:_buffer];
     }
     [_layoutCache invalidateForReplacementOfUTF16Range:range replacementLength:text.length previousBuffer:before];
-    [self moveSearchMatchesForReplacementOfUTF16Range:range replacementLength:text.length];
+    [_searchSession updateForReplacementOfUTF16Range:range replacementLength:text.length previousBuffer:before];
     NSRange after = [self clampedRange:selection];
     _anchor = after.location;
     _head = NSMaxRange(after);

@@ -44,13 +44,21 @@ FOUNDATION_EXPORT SCESyntaxTokenKind const SCESyntaxTokenPunctuation;
 @end
 
 /// Tokens may overlap; later tokens override earlier ones. Tokens can extend
-/// outside coveredRange, such as a multiline comment crossing the viewport.
+/// outside the covered ranges, such as a multiline comment crossing the viewport.
 @interface SCESyntaxHighlightResult : NSObject
 - (instancetype)initWithRevision:(NSUInteger)revision
                     coveredRange:(NSRange)range
                           tokens:(NSArray<SCESyntaxToken *> *)tokens;
+/// Creates a result for the disjoint ranges of a multiple-range request, in the
+/// order requested, which is document order.
+- (instancetype)initWithRevision:(NSUInteger)revision
+                   coveredRanges:(NSArray<NSValue *> *)ranges
+                          tokens:(NSArray<SCESyntaxToken *> *)tokens;
 @property (nonatomic, readonly) NSUInteger revision;
+/// The smallest range that contains every covered range.
 @property (nonatomic, readonly) NSRange coveredRange;
+/// The highlighted ranges in document order. A single-range result has one.
+@property (nonatomic, readonly, copy) NSArray<NSValue *> *coveredRanges;
 @property (nonatomic, readonly, copy) NSArray<SCESyntaxToken *> *tokens;
 @end
 
@@ -65,6 +73,11 @@ typedef void (^SCESyntaxHighlightCompletion)(SCESyntaxHighlightResult *_Nullable
 /// parse; the editor keeps its current colors instead of clearing them. While a
 /// request is pending, edited lines show the previous colors remapped to the
 /// edited text.
+///
+/// The editor requests the viewport first and, once that result arrives, a
+/// larger region around it, so that scrolling nearby shows colors without
+/// waiting. It applies every result delivered for the current document revision,
+/// even one for a request that a later request superseded.
 @protocol SCESyntaxHighlighter <NSObject>
 - (void)highlightBuffer:(SCETextBuffer *)snapshot
              UTF16Range:(NSRange)range
@@ -73,6 +86,18 @@ typedef void (^SCESyntaxHighlightCompletion)(SCESyntaxHighlightResult *_Nullable
 
 @optional
 - (void)cancelPendingRequests;
+
+/// Highlights several disjoint, non-empty ranges of one snapshot, sorted in
+/// document order, and reports them as the result's coveredRanges. The editor
+/// uses this to request only the visible part of each long line and to skip long
+/// lines outside the viewport. Ranges need not start or end at line boundaries.
+/// Without this method, the editor requests the smallest range that contains all
+/// of them through highlightBuffer:UTF16Range:afterEdit:completion:. The same
+/// coalescing, revision, and threading rules apply.
+- (void)highlightBuffer:(SCETextBuffer *)snapshot
+            UTF16Ranges:(NSArray<NSValue *> *)ranges
+              afterEdit:(nullable SCETextEdit *)edit
+             completion:(SCESyntaxHighlightCompletion)completion;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -90,6 +90,37 @@ static NSUInteger SCEKindPriority(SCESyntaxTokenKind kind) {
     return index == NSNotFound ? 0 : index;
 }
 
+// One capture of a highlight query, before conversion to a token.
+typedef struct {
+    NSUInteger start;
+    NSUInteger end;
+    uint32_t captureIndex;
+    NSUInteger priority;
+} SCECapturedToken;
+
+// Applies enclosing scopes before nested captures. For equal ranges, semantic
+// specificity lets JSON property names override the enclosing string token.
+static int SCECompareCapturedTokens(const void *a, const void *b) {
+    const SCECapturedToken *lhs = a;
+    const SCECapturedToken *rhs = b;
+    NSUInteger lhsLength = lhs->end - lhs->start;
+    NSUInteger rhsLength = rhs->end - rhs->start;
+    if (lhsLength != rhsLength) {
+        return lhsLength > rhsLength ? -1 : 1;
+    }
+    if (lhs->priority != rhs->priority) {
+        return lhs->priority < rhs->priority ? -1 : 1;
+    }
+    if (lhs->start != rhs->start) {
+        return lhs->start < rhs->start ? -1 : 1;
+    }
+    return lhs->captureIndex < rhs->captureIndex ? -1 : (lhs->captureIndex > rhs->captureIndex ? 1 : 0);
+}
+
+// The maximum number of captures in one result. Requests cover the viewport, so
+// a larger count means unusually dense text; the editor keeps its colors.
+static const NSUInteger SCEMaximumCapturedTokenCount = 20000;
+
 static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *tree) {
     if (tree) {
         ts_tree_delete(tree);
@@ -109,11 +140,14 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
     NSUInteger _treeRevision;
     NSUUID *_treeDocumentIdentifier;
     NSArray<SCESyntaxTokenKind> *_captureKinds;
+    // The override priority of each capture's kind, indexed by capture.
+    NSData *_capturePriorities;
     dispatch_queue_t _queue;
     NSLock *_stateLock;
     SCETextBuffer *_pendingSnapshot;
     NSMutableArray<SCETextEdit *> *_pendingEdits;
-    NSRange _pendingRange;
+    NSArray<NSValue *> *_pendingRanges;
+    BOOL _pendingRequestHasRanges;
     SCESyntaxHighlightCompletion _pendingCompletion;
     NSUInteger _requestIdentifier;
     NSUInteger _cancellationGeneration;
@@ -202,6 +236,12 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
         [kinds addObject:[[NSString alloc] initWithBytes:name length:length encoding:NSUTF8StringEncoding]];
     }
     _captureKinds = [kinds copy];
+    NSMutableData *priorities = [NSMutableData dataWithLength:kinds.count * sizeof(NSUInteger)];
+    NSUInteger *priority = priorities.mutableBytes;
+    for (NSUInteger index = 0; index < kinds.count; index++) {
+        priority[index] = SCEKindPriority(kinds[index]);
+    }
+    _capturePriorities = priorities;
     for (uint32_t pattern = 0; pattern < ts_query_pattern_count(_query); pattern++) {
         uint32_t count;
         ts_query_predicates_for_pattern(_query, pattern, &count);
@@ -237,11 +277,37 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
              UTF16Range:(NSRange)range
               afterEdit:(SCETextEdit *)edit
              completion:(SCESyntaxHighlightCompletion)completion {
-    NSUInteger start = MIN(range.location, snapshot.lengthUTF16);
-    range = NSMakeRange(start, MIN(range.length, snapshot.lengthUTF16 - start));
+    [self enqueueRequestForBuffer:snapshot
+                      UTF16Ranges:@[ [NSValue valueWithRange:range] ]
+                        hasRanges:NO
+                        afterEdit:edit
+                       completion:completion];
+}
+
+- (void)highlightBuffer:(SCETextBuffer *)snapshot
+            UTF16Ranges:(NSArray<NSValue *> *)ranges
+              afterEdit:(SCETextEdit *)edit
+             completion:(SCESyntaxHighlightCompletion)completion {
+    NSParameterAssert(ranges.count > 0);
+    [self enqueueRequestForBuffer:snapshot UTF16Ranges:ranges hasRanges:YES afterEdit:edit completion:completion];
+}
+
+- (void)enqueueRequestForBuffer:(SCETextBuffer *)snapshot
+                    UTF16Ranges:(NSArray<NSValue *> *)ranges
+                      hasRanges:(BOOL)hasRanges
+                      afterEdit:(SCETextEdit *)edit
+                     completion:(SCESyntaxHighlightCompletion)completion {
+    NSMutableArray<NSValue *> *clampedRanges = [NSMutableArray arrayWithCapacity:ranges.count];
+    for (NSValue *value in ranges) {
+        NSRange range = value.rangeValue;
+        NSUInteger start = MIN(range.location, snapshot.lengthUTF16);
+        range = NSMakeRange(start, MIN(range.length, snapshot.lengthUTF16 - start));
+        [clampedRanges addObject:[NSValue valueWithRange:range]];
+    }
     [_stateLock lock];
     _pendingSnapshot = [snapshot copy];
-    _pendingRange = range;
+    _pendingRanges = clampedRanges;
+    _pendingRequestHasRanges = hasRanges;
     _pendingCompletion = [completion copy];
     _requestIdentifier++;
     if (edit) {
@@ -286,7 +352,8 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
                 return;
             }
             NSArray<SCETextEdit *> *edits = [_pendingEdits copy];
-            NSRange range = _pendingRange;
+            NSArray<NSValue *> *ranges = _pendingRanges;
+            BOOL hasRanges = _pendingRequestHasRanges;
             SCESyntaxHighlightCompletion completion = _pendingCompletion;
             NSUInteger requestIdentifier = _requestIdentifier;
             NSUInteger cancellationGeneration = _cancellationGeneration;
@@ -297,7 +364,8 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
             [_pendingEdits removeAllObjects];
             [_stateLock unlock];
             SCESyntaxHighlightResult *result = [self highlightSnapshot:snapshot
-                                                                 range:range
+                                                                ranges:ranges
+                                                             hasRanges:hasRanges
                                                                  edits:edits
                                                 cancellationGeneration:cancellationGeneration
                                                                  reset:reset];
@@ -312,7 +380,8 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
 }
 
 - (SCESyntaxHighlightResult *)highlightSnapshot:(SCETextBuffer *)snapshot
-                                          range:(NSRange)range
+                                         ranges:(NSArray<NSValue *> *)ranges
+                                      hasRanges:(BOOL)hasRanges
                                           edits:(NSArray<SCETextEdit *> *)edits
                          cancellationGeneration:(NSUInteger)cancellationGeneration
                                           reset:(BOOL)reset {
@@ -374,10 +443,15 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
         }
         [_stateLock unlock];
     }
-    NSMutableArray<SCESyntaxToken *> *tokens = [NSMutableArray array];
-    if (range.length) {
-        TSQueryCursor *cursor = ts_query_cursor_new();
-        ts_query_cursor_set_match_limit(cursor, 16384);
+    NSMutableData *capturedData = [NSMutableData data];
+    const NSUInteger *priorities = _capturePriorities.bytes;
+    TSQueryCursor *cursor = ts_query_cursor_new();
+    ts_query_cursor_set_match_limit(cursor, 16384);
+    for (NSValue *value in ranges) {
+        NSRange range = value.rangeValue;
+        if (!range.length) {
+            continue;
+        }
         ts_query_cursor_set_byte_range(cursor, (uint32_t)(range.location * sizeof(unichar)),
                                        (uint32_t)(NSMaxRange(range) * sizeof(unichar)));
         ts_query_cursor_exec(cursor, _query, ts_tree_root_node(_tree));
@@ -385,41 +459,46 @@ static void SCEDeleteParserResources(TSParser *parser, TSQuery *query, TSTree *t
         uint32_t captureIndex;
         while (ts_query_cursor_next_capture(cursor, &match, &captureIndex)) {
             TSQueryCapture capture = match.captures[captureIndex];
-            NSUInteger start = ts_node_start_byte(capture.node) / sizeof(unichar);
-            NSUInteger end = ts_node_end_byte(capture.node) / sizeof(unichar);
-            NSRange tokenRange = NSMakeRange(start, end - start);
-            if (NSIntersectionRange(tokenRange, range).length) {
-                [tokens addObject:[[SCESyntaxToken alloc] initWithRange:tokenRange kind:_captureKinds[capture.index]]];
+            SCECapturedToken token = {
+                .start = ts_node_start_byte(capture.node) / sizeof(unichar),
+                .end = ts_node_end_byte(capture.node) / sizeof(unichar),
+                .captureIndex = capture.index,
+                .priority = priorities[capture.index],
+            };
+            if (token.end > token.start && token.end > range.location && token.start < NSMaxRange(range)) {
+                [capturedData appendBytes:&token length:sizeof(token)];
             }
-            if (tokens.count > 20000 || [self shouldCancelGeneration:cancellationGeneration
-                                                            revision:snapshot.revision]) {
+            if (capturedData.length / sizeof(SCECapturedToken) > SCEMaximumCapturedTokenCount ||
+                [self shouldCancelGeneration:cancellationGeneration revision:snapshot.revision]) {
                 ts_query_cursor_delete(cursor);
                 return nil;
             }
         }
-        BOOL exceeded = ts_query_cursor_did_exceed_match_limit(cursor);
-        ts_query_cursor_delete(cursor);
-        if (exceeded) {
+        if (ts_query_cursor_did_exceed_match_limit(cursor)) {
+            ts_query_cursor_delete(cursor);
             return nil;
         }
     }
-    // Apply enclosing scopes before nested captures. For equal ranges, semantic
-    // specificity lets JSON property names override the enclosing string token.
-    [tokens sortUsingComparator:^NSComparisonResult(SCESyntaxToken *a, SCESyntaxToken *b) {
-        if (a.range.length != b.range.length) {
-            return a.range.length > b.range.length ? NSOrderedAscending : NSOrderedDescending;
+    ts_query_cursor_delete(cursor);
+    SCECapturedToken *captured = capturedData.mutableBytes;
+    NSUInteger count = capturedData.length / sizeof(SCECapturedToken);
+    qsort(captured, count, sizeof(SCECapturedToken), SCECompareCapturedTokens);
+    NSMutableArray<SCESyntaxToken *> *tokens = [NSMutableArray arrayWithCapacity:count];
+    for (NSUInteger index = 0; index < count; index++) {
+        // A capture that spans several requested ranges is reported once.
+        if (index && !SCECompareCapturedTokens(&captured[index - 1], &captured[index])) {
+            continue;
         }
-        NSUInteger lhs = SCEKindPriority(a.kind);
-        NSUInteger rhs = SCEKindPriority(b.kind);
-        if (lhs != rhs) {
-            return lhs < rhs ? NSOrderedAscending : NSOrderedDescending;
-        }
-        if (a.range.location != b.range.location) {
-            return a.range.location < b.range.location ? NSOrderedAscending : NSOrderedDescending;
-        }
-        return NSOrderedSame;
-    }];
-    return [[SCESyntaxHighlightResult alloc] initWithRevision:snapshot.revision coveredRange:range tokens:tokens];
+        NSRange tokenRange = NSMakeRange(captured[index].start, captured[index].end - captured[index].start);
+        [tokens addObject:[[SCESyntaxToken alloc] initWithRange:tokenRange
+                                                           kind:_captureKinds[captured[index].captureIndex]]];
+    }
+    if (!hasRanges) {
+        return [[SCESyntaxHighlightResult alloc] initWithRevision:snapshot.revision
+                                                     coveredRange:ranges.firstObject.rangeValue
+                                                           tokens:tokens];
+    }
+    return [[SCESyntaxHighlightResult alloc] initWithRevision:snapshot.revision coveredRanges:ranges tokens:tokens];
 }
 
 // Regression checks inspect these private, synchronized

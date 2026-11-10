@@ -1,5 +1,5 @@
 #import "include/SCEFindBarView.h"
-#import "include/SCEEditorView.h"
+#import "SCEEditorViewInternal.h"
 
 static const CGFloat SCEFindBarControlHeight = 36;
 // Controls inside a capsule keep this inset from its top, bottom, and trailing
@@ -353,8 +353,11 @@ static const CGFloat SCEFindBarMinimumFieldWidth = 180;
     _selectionObserver = nil;
 }
 
+// Selects the match from the origin as soon as the known matches determine it,
+// which is usually before the whole document is searched.
 - (void)searchResultsDidChange {
-    if (_selectsMatchFromSearchOrigin && !_editor.isSearchPending) {
+    if (_selectsMatchFromSearchOrigin &&
+        [_editor canSelectNextSearchMatchFromUTF16OffsetWithoutSearching:_searchOrigin]) {
         [self selectMatchFromSearchOrigin];
     }
     [self updateStatus];
@@ -416,9 +419,7 @@ static const CGFloat SCEFindBarMinimumFieldWidth = 180;
     _editor.searchQuery =
         pattern.length ? [[SCETextSearchQuery alloc] initWithPattern:pattern options:_searchOptions] : nil;
     // An unchanged query produces no notification, so complete the selection here.
-    if (!_editor.isSearchPending) {
-        [self searchResultsDidChange];
-    }
+    [self searchResultsDidChange];
 }
 
 // Selects the first match at or after the origin, wrapping to the first match.

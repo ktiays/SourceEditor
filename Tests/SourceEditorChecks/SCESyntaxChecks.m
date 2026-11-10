@@ -15,6 +15,8 @@ static NSUInteger SCESyntaxCheckCount;
 @interface SCEControlledRequest : NSObject
 @property (nonatomic, strong) SCETextBuffer *snapshot;
 @property (nonatomic) NSRange range;
+// The ranges of a multiple-range request, or nil.
+@property (nonatomic, copy) NSArray<NSValue *> *ranges;
 @property (nonatomic, strong) SCETextEdit *edit;
 @property (nonatomic, copy) SCESyntaxHighlightCompletion completion;
 @end
@@ -54,6 +56,28 @@ static NSUInteger SCESyntaxCheckCount;
 
 @end
 
+// Records multiple-range requests as well.
+@interface SCEControlledRangeHighlighter : SCEControlledHighlighter
+@end
+
+@implementation SCEControlledRangeHighlighter
+
+- (void)highlightBuffer:(SCETextBuffer *)snapshot
+            UTF16Ranges:(NSArray<NSValue *> *)ranges
+              afterEdit:(SCETextEdit *)edit
+             completion:(SCESyntaxHighlightCompletion)completion {
+    SCEControlledRequest *request = [[SCEControlledRequest alloc] init];
+    request.snapshot = snapshot;
+    request.ranges = ranges;
+    NSUInteger start = ranges.firstObject.rangeValue.location;
+    request.range = NSMakeRange(start, NSMaxRange(ranges.lastObject.rangeValue) - start);
+    request.edit = edit;
+    request.completion = completion;
+    [self.requests addObject:request];
+}
+
+@end
+
 // Runs the main run loop until every block already submitted to the main queue,
 // such as the editor's result handler, has run. The main queue is FIFO, so a
 // sentinel submitted afterward runs last. A fixed run-loop interval is not
@@ -70,10 +94,161 @@ static void SCEDrainMainQueue(void) {
 }
 
 static void SCEDeliverHighlight(SCEControlledRequest *request, NSArray<SCESyntaxToken *> *tokens) {
-    request.completion([[SCESyntaxHighlightResult alloc] initWithRevision:request.snapshot.revision
-                                                             coveredRange:request.range
-                                                                   tokens:tokens]);
+    if (request.ranges) {
+        request.completion([[SCESyntaxHighlightResult alloc] initWithRevision:request.snapshot.revision
+                                                                coveredRanges:request.ranges
+                                                                       tokens:tokens]);
+    } else {
+        request.completion([[SCESyntaxHighlightResult alloc] initWithRevision:request.snapshot.revision
+                                                                 coveredRange:request.range
+                                                                       tokens:tokens]);
+    }
     SCEDrainMainQueue();
+}
+
+// Returns a keyword token every stride UTF-16 units within the requested ranges.
+static NSArray<SCESyntaxToken *> *SCETokensInRequest(SCEControlledRequest *request, NSUInteger stride) {
+    NSMutableArray<SCESyntaxToken *> *tokens = [NSMutableArray array];
+    for (NSValue *value in request.ranges ?: @[ [NSValue valueWithRange:request.range] ]) {
+        NSRange range = value.rangeValue;
+        for (NSUInteger offset = range.location; offset + 4 <= NSMaxRange(range); offset += stride) {
+            [tokens addObject:[[SCESyntaxToken alloc] initWithRange:NSMakeRange(offset, 4) kind:SCESyntaxTokenKeyword]];
+        }
+    }
+    return tokens;
+}
+
+static SCESyntaxToken *SCEToken(NSUInteger location, NSUInteger length, SCESyntaxTokenKind kind) {
+    return [[SCESyntaxToken alloc] initWithRange:NSMakeRange(location, length) kind:kind];
+}
+
+static NSArray<NSValue *> *SCERanges(NSRange range) {
+    return @[ [NSValue valueWithRange:range] ];
+}
+
+static void SCECheckPartialLineTokens(void) {
+    NSMutableString *text = [NSMutableString stringWithCapacity:100010];
+    while (text.length < 100000) {
+        [text appendString:@"word123 "];
+    }
+    [text appendString:@"\nshort\n"];
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithString:text];
+    SCELineLayoutCache *cache =
+        [[SCELineLayoutCache alloc] initWithBuffer:buffer
+                                              font:[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular]];
+    SCESyntaxTokenKind string = SCESyntaxTokenString;
+    SCESyntaxTokenKind keyword = SCESyntaxTokenKeyword;
+    [cache applySyntaxTokens:@[ SCEToken(50, 100, string), SCEToken(180, 10, keyword) ]
+               toUTF16Ranges:SCERanges(NSMakeRange(100, 100))];
+    NSDictionary<NSNumber *, NSArray<SCESyntaxToken *> *> *tokens = [cache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK([tokens[@0] isEqualToArray:(@[ SCEToken(100, 50, string), SCEToken(180, 10, keyword) ])],
+                 "tokens of a partly covered line must be clipped to the covered part");
+    [cache applySyntaxTokens:@[ SCEToken(310, 10, keyword) ] toUTF16Ranges:SCERanges(NSMakeRange(300, 100))];
+    tokens = [cache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK(
+        [tokens[@0]
+            isEqualToArray:(@[ SCEToken(100, 50, string), SCEToken(180, 10, keyword), SCEToken(310, 10, keyword) ])],
+        "a later window of the same line must keep earlier colors outside it");
+    [cache applySyntaxTokens:@[] toUTF16Ranges:SCERanges(NSMakeRange(140, 45))];
+    tokens = [cache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK(
+        [tokens[@0]
+            isEqualToArray:(@[ SCEToken(100, 40, string), SCEToken(185, 5, keyword), SCEToken(310, 10, keyword) ])],
+        "a window must replace earlier colors only inside it");
+    [cache applySyntaxTokens:@[ SCEToken(90000, 5, keyword) ] toUTF16Ranges:SCERanges(NSMakeRange(90000, 100))];
+    tokens = [cache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK([tokens[@0] isEqualToArray:@[ SCEToken(90000, 5, keyword) ]],
+                 "colors far from a new window must be discarded");
+    NSRange shortLine = [buffer UTF16RangeOfLine:1 includingLineEnding:YES];
+    [cache applySyntaxTokens:@[ SCEToken(90000, 5, keyword), SCEToken(shortLine.location, 2, keyword) ]
+               toUTF16Ranges:@[ [NSValue valueWithRange:NSMakeRange(90000, 10)], [NSValue valueWithRange:shortLine] ]];
+    tokens = [cache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK([tokens[@1] isEqualToArray:@[ SCEToken(0, 2, keyword) ]] &&
+                     [tokens[@0] isEqualToArray:@[ SCEToken(90000, 5, keyword) ]],
+                 "a multiple-range result must color each covered line");
+    puts("PASS partial-line tokens: clipping, windows that keep earlier colors, distance pruning, multiple ranges");
+}
+
+static void SCECheckViewportHighlighting(void) {
+    NSScrollView *scroll = [SCEEditorView scrollableEditorView];
+    scroll.frame = NSMakeRect(0, 0, 600, 400);
+    SCEEditorView *editor = (SCEEditorView *)scroll.documentView;
+    NSMutableString *text = [NSMutableString string];
+    for (NSUInteger line = 0; line < 3000; line++) {
+        [text appendFormat:@"line %04lu value\n", (unsigned long)line];
+    }
+    editor.string = text;
+    SCEControlledRangeHighlighter *highlighter = [[SCEControlledRangeHighlighter alloc] init];
+    editor.syntaxHighlighter = highlighter;
+    SYNTAX_CHECK(highlighter.requests.count == 1, "attaching a highlighter must request only the viewport first");
+    SCEControlledRequest *visibleRequest = highlighter.requests[0];
+    SCEDeliverHighlight(visibleRequest, SCETokensInRequest(visibleRequest, 16));
+    SYNTAX_CHECK(highlighter.requests.count == 2, "viewport colors must start a prefetch of the region around it");
+    SCEControlledRequest *prefetch = highlighter.requests[1];
+    SYNTAX_CHECK(!prefetch.edit && prefetch.range.location <= visibleRequest.range.location &&
+                     NSMaxRange(prefetch.range) > NSMaxRange(visibleRequest.range) + 400,
+                 "the prefetch must contain the viewport and extend below it");
+    SCEDeliverHighlight(prefetch, SCETokensInRequest(prefetch, 16));
+    SYNTAX_CHECK(highlighter.requests.count == 2, "a prefetched viewport must not request again");
+
+    // Lines scrolled into view from the prefetched region already have colors.
+    CGFloat lineHeight = [[editor valueForKey:@"lineHeight"] doubleValue];
+    [editor scrollPoint:NSMakePoint(0, 20 * lineHeight)];
+    SCELineLayoutCache *cache = [editor valueForKey:@"layoutCache"];
+    NSDictionary<NSNumber *, NSArray<SCESyntaxToken *> *> *tokens = [cache valueForKey:@"syntaxTokens"];
+    NSUInteger bottomLine = (NSUInteger)((20 * lineHeight + 400) / lineHeight);
+    SYNTAX_CHECK(tokens[@(bottomLine)].count > 0, "lines scrolled into view must already have prefetched colors");
+    SCEControlledRequest *latest = highlighter.requests.lastObject;
+    SYNTAX_CHECK(latest == prefetch || (!latest.edit && latest.range.location >= prefetch.range.location &&
+                                        NSMaxRange(latest.range) > NSMaxRange(prefetch.range)),
+                 "scrolling within prefetched lines may only move the prefetched region");
+
+    // A result for the current revision is applied even after a later request.
+    [editor scrollPoint:NSMakePoint(0, 2000 * lineHeight)];
+    SCEControlledRequest *far = highlighter.requests.lastObject;
+    [editor scrollPoint:NSMakePoint(0, 2003 * lineHeight)];
+    SYNTAX_CHECK(highlighter.requests.lastObject != far, "scrolling again must issue a newer request");
+    SCEDeliverHighlight(far, SCETokensInRequest(far, 16));
+    tokens = [cache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK(tokens[@2010].count > 0, "a superseded result for the current revision must be applied");
+    editor.syntaxHighlighter = nil;
+
+    // A long line is requested only around the viewport, in its own range.
+    NSScrollView *longScroll = [SCEEditorView scrollableEditorView];
+    longScroll.frame = NSMakeRect(0, 0, 600, 400);
+    SCEEditorView *longEditor = (SCEEditorView *)longScroll.documentView;
+    NSMutableString *longText = [NSMutableString string];
+    while (longText.length < 300000) {
+        [longText appendString:@"word123 "];
+    }
+    [longText appendString:@"\nshort\nlines\n"];
+    longEditor.string = longText;
+    SCEControlledRangeHighlighter *longHighlighter = [[SCEControlledRangeHighlighter alloc] init];
+    longEditor.syntaxHighlighter = longHighlighter;
+    SCEControlledRequest *longRequest = longHighlighter.requests.lastObject;
+    NSRange window = longRequest.ranges.firstObject.rangeValue;
+    SYNTAX_CHECK(longRequest.ranges.count == 2 && window.location == 0 && window.length < 20000 &&
+                     longRequest.ranges[1].rangeValue.location == 300001,
+                 "a long line must be requested only near the viewport, separately from short lines");
+    SCEDeliverHighlight(longRequest, SCETokensInRequest(longRequest, 50));
+    SCELineLayoutCache *longCache = [longEditor valueForKey:@"layoutCache"];
+    tokens = [longCache valueForKey:@"syntaxTokens"];
+    SYNTAX_CHECK(tokens[@0].count > 0 && NSMaxRange(tokens[@0].lastObject.range) <= NSMaxRange(window) &&
+                     tokens[@1].count > 0,
+                 "colors must reach the requested part of a long line and the short lines");
+    [longEditor scrollPoint:NSMakePoint(600000, 0)];
+    longRequest = longHighlighter.requests.lastObject;
+    window = longRequest.ranges.firstObject.rangeValue;
+    SYNTAX_CHECK(window.location > 50000 && window.length < 20000,
+                 "horizontal scrolling must request the newly visible part of a long line");
+    SCEDeliverHighlight(longRequest, SCETokensInRequest(longRequest, 50));
+    tokens = [longCache valueForKey:@"syntaxTokens"];
+    BOOL colored = NO;
+    for (SCESyntaxToken *token in tokens[@0]) {
+        colored = colored || NSLocationInRange(token.range.location, window);
+    }
+    SYNTAX_CHECK(colored, "the newly visible part of a long line must receive colors");
+    puts("PASS viewport highlighting: viewport first, prefetch, scrolling with colors, superseded results, long lines");
 }
 
 static BOOL SCEHasColor(SCELineLayout *layout, NSColor *expected) {
@@ -262,5 +437,7 @@ NSUInteger SCECheckSyntaxCore(void) {
                  "edit coordinates must count UTF-16 units and preserve CRLF rows");
     puts(
         "PASS syntax core: engine-independent injection, Core Text colors, cache reuse, stale-result rejection, detach, UTF-16 edits");
+    SCECheckPartialLineTokens();
+    SCECheckViewportHighlighting();
     return SCESyntaxCheckCount;
 }

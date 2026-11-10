@@ -742,6 +742,50 @@ static int SCECompareTokenSpansByOrder(const void *a, const void *b) {
 
 static const NSUInteger SCEMaximumRemappedLinesPerToken = 256;
 
+// On a partly highlighted line, previous tokens farther than this many UTF-16
+// code units from the newly covered part are discarded.
+static const NSUInteger SCEMaximumRetainedTokenDistance = 1 << 16;
+
+// The lines a highlight result covers, with the covered part of each line.
+@interface SCESyntaxCoverage : NSObject
+@property (nonatomic) NSUInteger line;
+@property (nonatomic) NSRange content;
+@property (nonatomic) BOOL coversContent;
+// Line-local covered intervals in increasing order, for a partly covered line.
+@property (nonatomic, strong) NSMutableArray<NSValue *> *intervals;
+@property (nonatomic, strong) NSMutableArray<SCESyntaxToken *> *tokens;
+@end
+
+@implementation SCESyntaxCoverage
+@end
+
+// Appends the parts of range that lie outside every interval, and within the
+// retained distance of one, to pieces. intervals are sorted and disjoint.
+static void SCEAppendUncoveredParts(NSRange range, NSArray<NSValue *> *intervals, NSMutableArray<NSValue *> *pieces) {
+    NSUInteger start = range.location;
+    NSUInteger end = NSMaxRange(range);
+    NSUInteger retainedStart = intervals.firstObject.rangeValue.location;
+    retainedStart =
+        retainedStart > SCEMaximumRetainedTokenDistance ? retainedStart - SCEMaximumRetainedTokenDistance : 0;
+    NSUInteger retainedEnd = NSMaxRange(intervals.lastObject.rangeValue) + SCEMaximumRetainedTokenDistance;
+    start = MAX(start, retainedStart);
+    end = MIN(end, retainedEnd);
+    for (NSValue *value in intervals) {
+        NSRange interval = value.rangeValue;
+        if (start >= end) {
+            return;
+        }
+        if (interval.location > start) {
+            NSUInteger pieceEnd = MIN(end, interval.location);
+            [pieces addObject:[NSValue valueWithRange:NSMakeRange(start, pieceEnd - start)]];
+        }
+        start = MAX(start, NSMaxRange(interval));
+    }
+    if (start < end) {
+        [pieces addObject:[NSValue valueWithRange:NSMakeRange(start, end - start)]];
+    }
+}
+
 @implementation SCELineLayoutCache {
     SCETextBuffer *_buffer;
     NSMutableDictionary<NSNumber *, SCELineLayout *> *_layouts;
@@ -1007,6 +1051,10 @@ static const NSUInteger SCEMaximumRemappedLinesPerToken = 256;
 }
 
 - (void)retainLinesInRange:(NSRange)range {
+    [self retainLinesInRange:range syntaxTokensInLineRange:range];
+}
+
+- (void)retainLinesInRange:(NSRange)range syntaxTokensInLineRange:(NSRange)syntaxTokenRange {
     for (NSNumber *key in [_layouts.allKeys copy]) {
         if (!NSLocationInRange(key.unsignedIntegerValue, range)) {
             [_layouts removeObjectForKey:key];
@@ -1018,66 +1066,133 @@ static const NSUInteger SCEMaximumRemappedLinesPerToken = 256;
         }
     }
     for (NSNumber *key in [_syntaxTokens.allKeys copy]) {
-        if (!NSLocationInRange(key.unsignedIntegerValue, range)) {
+        if (!NSLocationInRange(key.unsignedIntegerValue, syntaxTokenRange)) {
             [_syntaxTokens removeObjectForKey:key];
         }
     }
 }
 
 - (BOOL)applySyntaxTokens:(NSArray<SCESyntaxToken *> *)tokens toLineRange:(NSRange)lineRange {
-    if (lineRange.location >= _buffer.lineCount) {
+    if (lineRange.location >= _buffer.lineCount || !lineRange.length) {
         return NO;
     }
-    NSUInteger lineCount = MIN(lineRange.length, _buffer.lineCount - lineRange.location);
-    NSMutableArray<NSValue *> *contents = [NSMutableArray arrayWithCapacity:lineCount];
-    NSMutableArray<NSMutableArray<SCESyntaxToken *> *> *tokensByLine = [NSMutableArray arrayWithCapacity:lineCount];
-    for (NSUInteger index = 0; index < lineCount; index++) {
-        NSRange content = [_buffer UTF16RangeOfLine:lineRange.location + index includingLineEnding:NO];
-        [contents addObject:[NSValue valueWithRange:content]];
-        [tokensByLine addObject:[NSMutableArray array]];
+    NSUInteger lastLine = MIN(NSMaxRange(lineRange), _buffer.lineCount) - 1;
+    NSUInteger start = [_buffer UTF16RangeOfLine:lineRange.location includingLineEnding:YES].location;
+    NSUInteger end = NSMaxRange([_buffer UTF16RangeOfLine:lastLine includingLineEnding:NO]);
+    return [self applySyntaxTokens:tokens toUTF16Ranges:@[ [NSValue valueWithRange:NSMakeRange(start, end - start)] ]];
+}
+
+// Returns the covered lines of ranges in document order.
+- (NSArray<SCESyntaxCoverage *> *)coverageForUTF16Ranges:(NSArray<NSValue *> *)ranges {
+    NSMutableArray<SCESyntaxCoverage *> *coverage = [NSMutableArray array];
+    NSUInteger length = _buffer.lengthUTF16;
+    for (NSValue *value in ranges) {
+        NSRange range = value.rangeValue;
+        if (range.location > length) {
+            continue;
+        }
+        range.length = MIN(range.length, length - range.location);
+        NSUInteger firstLine = [_buffer lineIndexForUTF16Offset:range.location];
+        NSUInteger lastLine = [_buffer lineIndexForUTF16Offset:NSMaxRange(range)];
+        for (NSUInteger line = firstLine; line <= lastLine; line++) {
+            NSRange content = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
+            BOOL coversContent = range.location <= content.location && NSMaxRange(range) >= NSMaxRange(content);
+            NSRange overlap = NSIntersectionRange(content, range);
+            if (!coversContent && !overlap.length) {
+                continue;
+            }
+            SCESyntaxCoverage *entry = coverage.lastObject;
+            if (entry.line != line || !coverage.count) {
+                entry = [[SCESyntaxCoverage alloc] init];
+                entry.line = line;
+                entry.content = content;
+                entry.intervals = [NSMutableArray array];
+                entry.tokens = [NSMutableArray array];
+                [coverage addObject:entry];
+            }
+            entry.coversContent = entry.coversContent || coversContent;
+            NSRange local = NSMakeRange(overlap.location - content.location, overlap.length);
+            [entry.intervals addObject:[NSValue valueWithRange:local]];
+        }
     }
-    // Locate each capture's first affected visible line by binary search,
-    // instead of scanning the entire capture list once for every visible row.
+    return coverage;
+}
+
+- (BOOL)applySyntaxTokens:(NSArray<SCESyntaxToken *> *)tokens toUTF16Ranges:(NSArray<NSValue *> *)ranges {
+    NSArray<SCESyntaxCoverage *> *coverage = [self coverageForUTF16Ranges:ranges];
+    NSUInteger count = coverage.count;
+    if (!count) {
+        return NO;
+    }
+    // Locate each token's first covered line by binary search, instead of
+    // scanning the entire token list once for every covered line.
     for (SCESyntaxToken *token in tokens) {
         if (!token.range.length || token.range.location > _buffer.lengthUTF16 ||
             token.range.length > _buffer.lengthUTF16 - token.range.location) {
             continue;
         }
         NSUInteger low = 0;
-        NSUInteger high = lineCount;
+        NSUInteger high = count;
         while (low < high) {
             NSUInteger middle = low + (high - low) / 2;
-            if (NSMaxRange(contents[middle].rangeValue) <= token.range.location) {
+            if (NSMaxRange(coverage[middle].content) <= token.range.location) {
                 low = middle + 1;
             } else {
                 high = middle;
             }
         }
-        for (NSUInteger index = low; index < lineCount; index++) {
-            NSRange content = contents[index].rangeValue;
+        for (NSUInteger index = low; index < count; index++) {
+            SCESyntaxCoverage *entry = coverage[index];
+            NSRange content = entry.content;
             if (content.location >= NSMaxRange(token.range)) {
                 break;
             }
             NSRange overlap = NSIntersectionRange(content, token.range);
-            if (overlap.length) {
-                NSRange local = NSMakeRange(overlap.location - content.location, overlap.length);
-                [tokensByLine[index] addObject:[[SCESyntaxToken alloc] initWithRange:local kind:token.kind]];
+            if (!overlap.length) {
+                continue;
+            }
+            NSRange local = NSMakeRange(overlap.location - content.location, overlap.length);
+            if (entry.coversContent) {
+                [entry.tokens addObject:[[SCESyntaxToken alloc] initWithRange:local kind:token.kind]];
+                continue;
+            }
+            for (NSValue *interval in entry.intervals) {
+                NSRange clipped = NSIntersectionRange(local, interval.rangeValue);
+                if (clipped.length) {
+                    [entry.tokens addObject:[[SCESyntaxToken alloc] initWithRange:clipped kind:token.kind]];
+                }
             }
         }
     }
     BOOL changed = NO;
-    for (NSUInteger index = 0; index < lineCount; index++) {
-        NSUInteger line = lineRange.location + index;
-        NSArray<SCESyntaxToken *> *localTokens = tokensByLine[index];
-        NSArray<SCESyntaxToken *> *previous = _syntaxTokens[@(line)] ?: @[];
-        if (![previous isEqualToArray:localTokens]) {
-            [self discardLayoutPreservingGeometryForLine:line];
+    for (SCESyntaxCoverage *entry in coverage) {
+        NSArray<SCESyntaxToken *> *previous = _syntaxTokens[@(entry.line)] ?: @[];
+        NSArray<SCESyntaxToken *> *lineTokens = entry.tokens;
+        if (!entry.coversContent) {
+            // Earlier colors outside the covered part stay until that part is
+            // highlighted. They precede the new tokens but never overlap them.
+            NSMutableArray<SCESyntaxToken *> *merged = [NSMutableArray array];
+            NSMutableArray<NSValue *> *pieces = [NSMutableArray array];
+            for (SCESyntaxToken *token in previous) {
+                [pieces removeAllObjects];
+                SCEAppendUncoveredParts(token.range, entry.intervals, pieces);
+                for (NSValue *piece in pieces) {
+                    [merged addObject:NSEqualRanges(piece.rangeValue, token.range)
+                                          ? token
+                                          : [[SCESyntaxToken alloc] initWithRange:piece.rangeValue kind:token.kind]];
+                }
+            }
+            [merged addObjectsFromArray:entry.tokens];
+            lineTokens = merged;
+        }
+        if (![previous isEqualToArray:lineTokens]) {
+            [self discardLayoutPreservingGeometryForLine:entry.line];
             changed = YES;
         }
-        if (localTokens.count) {
-            _syntaxTokens[@(line)] = [localTokens copy];
+        if (lineTokens.count) {
+            _syntaxTokens[@(entry.line)] = [lineTokens copy];
         } else {
-            [_syntaxTokens removeObjectForKey:@(line)];
+            [_syntaxTokens removeObjectForKey:@(entry.line)];
         }
     }
     return changed;

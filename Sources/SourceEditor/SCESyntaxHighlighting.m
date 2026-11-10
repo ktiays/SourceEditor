@@ -78,9 +78,18 @@ SCESyntaxTokenKind const SCESyntaxTokenPunctuation = @"punctuation";
 - (instancetype)initWithRevision:(NSUInteger)revision
                     coveredRange:(NSRange)range
                           tokens:(NSArray<SCESyntaxToken *> *)tokens {
+    return [self initWithRevision:revision coveredRanges:@[ [NSValue valueWithRange:range] ] tokens:tokens];
+}
+
+- (instancetype)initWithRevision:(NSUInteger)revision
+                   coveredRanges:(NSArray<NSValue *> *)ranges
+                          tokens:(NSArray<SCESyntaxToken *> *)tokens {
+    NSParameterAssert(ranges.count > 0);
     if ((self = [super init])) {
         _revision = revision;
-        _coveredRange = range;
+        _coveredRanges = [ranges copy];
+        NSUInteger start = ranges.firstObject.rangeValue.location;
+        _coveredRange = NSMakeRange(start, NSMaxRange(ranges.lastObject.rangeValue) - start);
         _tokens = [tokens copy];
     }
     return self;

@@ -95,12 +95,28 @@ FOUNDATION_EXPORT const NSUInteger SCELineLayoutFragmentLength;
                            replacementLength:(NSUInteger)replacementLength
                               previousBuffer:(SCETextBuffer *)previousBuffer;
 
+/// Discards layouts and measured geometry of lines outside range, and syntax
+/// tokens of lines outside syntaxTokenRange. syntaxTokenRange normally contains
+/// range, so that colors prefetched around the viewport survive scrolling.
+- (void)retainLinesInRange:(NSRange)range syntaxTokensInLineRange:(NSRange)syntaxTokenRange;
+
+/// Retains layouts and syntax tokens of the same lines.
 - (void)retainLinesInRange:(NSRange)range;
 
 - (void)removeAllLayouts;
 
-/// Returns whether any line's presentation actually changed.
+/// Replaces the syntax tokens of every line in lineRange with the tokens that
+/// intersect it. Returns whether any line's presentation actually changed.
 - (BOOL)applySyntaxTokens:(NSArray<SCESyntaxToken *> *)tokens toLineRange:(NSRange)lineRange;
+
+/// Applies a highlight result for ranges, which are disjoint, sorted in document
+/// order, and count UTF-16 code units. A line whose content lies entirely in one
+/// range takes exactly the tokens that intersect it. On a partly covered line,
+/// such as a long line highlighted only around the viewport, tokens are clipped
+/// to the covered part and replace the previous colors only there; previous
+/// tokens far from the covered part are discarded to bound memory. Returns
+/// whether any line's presentation actually changed.
+- (BOOL)applySyntaxTokens:(NSArray<SCESyntaxToken *> *)tokens toUTF16Ranges:(NSArray<NSValue *> *)ranges;
 
 - (void)removeAllSyntaxTokens;
 @end
