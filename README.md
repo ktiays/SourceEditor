@@ -38,7 +38,7 @@ The demo starts with the first listed language and displays the **Syntax** menu 
 
 `script/build_and_run.sh` builds an application bundle in `dist/` and launches it. It also supports `--verify`, `--debug`, `--logs`, and `--telemetry`. Use `./script/build_and_run.sh --preview` to launch a separate build with its own bundle path while preserving existing windows and their undo history.
 
-The demo hosts the editor component and retains document content in memory. Closing the application discards that content. Host applications are responsible for file management and persistence.
+The demo hosts the editor component and retains document content in memory. **File > Open** loads a UTF-8 file through a file-backed buffer, so large files open without being decoded; the demo does not save, and closing the application discards edits. Host applications are responsible for file management and persistence.
 
 ## Coding conventions
 
@@ -65,6 +65,18 @@ self.view = scrollView;
 ```
 
 You can also create an `SCEEditorView` directly and assign it to an `NSScrollView`'s `documentView`. Access the editor and its properties on the main thread.
+
+To open a UTF-8 file, create a file-backed buffer and let the editor share its storage:
+
+```objc
+NSError *error = nil;
+SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithContentsOfURL:fileURL error:&error];
+if (buffer) {
+    [editor replaceContentsWithBuffer:buffer];
+}
+```
+
+`initWithContentsOfURL:error:` memory-maps files on local volumes and reads files on other volumes into memory. Loading scans the bytes once, in parallel, to record the UTF-16 length and line-feed count of each 16 KiB leaf; text is decoded only when read, through a cache of 64 leaves per file. A leading byte order mark is dropped, and each maximal ill-formed UTF-8 subsequence decodes to U+FFFD. Use `initWithString:` for other encodings. Replacing the file, as atomic saves do, does not affect an open buffer, but truncating a mapped file in place makes later reads of the removed pages terminate the process; do not map files that other processes rewrite in place.
 
 ## Indentation and bracket completion
 
@@ -126,7 +138,7 @@ Each request starts with a fresh menu. Set the inherited `editor.menu` property 
 
 `automaticLinkDetectionEnabled` defaults to `YES`. Foundation's data detector recognizes HTTP and HTTPS URLs, including supported addresses without an explicit scheme. Hold Command while hovering over a link to underline it and show a pointing-hand cursor. Command-click opens the link through `NSWorkspace` in the default browser while preserving the selection, including in read-only and non-focusable editors. Ordinary clicks continue to select text. Dragging, releasing Command before mouse-up, or editing the document cancels a pending link click.
 
-Use `URLAtPoint:effectiveRange:` to query the URL and its UTF-16 range at a visible point in the editor's document coordinates. Detection caches only the pointed-to logical line, and edits invalidate that cache. The gutter, empty space, email addresses, and non-web URL schemes do not activate browser links. Links do not span logical lines. Detection and Core Text layout both process a complete logical line, so unusually long lines retain the limitation described below.
+Use `URLAtPoint:effectiveRange:` to query the URL and its UTF-16 range at a visible point in the editor's document coordinates. Detection caches only the pointed-to logical line, and edits invalidate that cache. On lines longer than 4,096 UTF-16 code units, detection scans 2,048 code units on each side of the pointer instead of the whole line and ignores links that reach the edge of that window. The gutter, empty space, email addresses, and non-web URL schemes do not activate browser links. Links do not span logical lines.
 
 ## Find and incremental search
 
@@ -211,15 +223,19 @@ SourceEditor uses AppKit for native interaction and Core Text for font layout, f
 
 | Component | Responsibility | Implementation |
 | --- | --- | --- |
-| `SCETextBuffer` | UTF-16 storage, line indexing, independent snapshots | AVL rope with immutable nodes, leaves of at most 4,096 UTF-16 code units, and subtree length and line-feed counts |
+| `SCETextBuffer` | UTF-16 storage, line indexing, independent snapshots | AVL rope with immutable nodes and subtree length and line-feed counts. Edited leaves own at most 4,096 UTF-16 code units; file-backed leaves refer to up to 16 KiB of a mapped UTF-8 file and decode on demand |
 | `SCEViewport` | Visible-line ranges | Fixed line height; visible lines plus six context lines on either side; independent of Core Text |
-| `SCELineLayoutCache` | Layout, hit testing, selection geometry | Creates `CTLine` objects on demand; invalidates intersecting lines and shifts subsequent cache entries after edits |
+| `SCELineLayoutCache` | Layout, hit testing, selection geometry | Creates `CTLine` objects on demand, dividing long lines into fragments laid out as they become visible; invalidates intersecting lines and shifts subsequent cache entries after edits |
 | `SCEEditorView` | AppKit interaction and component integration | `NSTextInputClient`, standard editing commands, undo, mouse selection, and scrolling |
 | `SCELanguageConfiguration` | Language-specific editing rules | Immutable bracket pairs, independent context providers, bounded lexical recognition, and revision-checked checkpoints |
 | `SCESyntaxHighlighter` and `SCESyntaxTheme` | Highlighting interface and presentation | Semantic UTF-16 ranges, asynchronous revision checks, and separate parsing and color configuration |
 | `SourceEditorTreeSitter` | Optional JSON parsing | Upstream C runtime and grammar packages, incremental background parsing, and viewport capture queries |
 
 Edits access intersecting rope chunks without constructing an `NSAttributedString` for the complete document. Line lookup traverses the tree. Snapshots share immutable nodes, making copies O(1). Reading `editor.string` or `buffer.string` materializes the complete document in O(N) time; avoid these reads in per-keystroke callbacks.
+
+A file-backed buffer keeps the file mapped and holds only per-leaf counts, so its memory use does not grow with the file size. Splitting a file-backed leaf during an edit replaces it with owned leaves; other leaves keep referring to the file. Decoding uses one UTF-8 decoder for both the load-time index and on-demand reads, so the two always agree on UTF-16 lengths. The decoded-leaf cache is thread-safe and returns leaves without autoreleasing them, so a background reader such as the parser does not accumulate decoded text.
+
+Lines up to 2,048 UTF-16 code units are laid out as one `CTLine`. Longer lines are divided into fragments of about 1,024 code units, preferably after a space or tab and always at a grapheme cluster boundary. Fragments are measured left to right on demand, because each fragment's position is the sum of the widths before it; `CTTypesetterCreateLineWithOffset` keeps tab stops relative to the line start. A layout retains the CTLines of eight fragments. Drawing, selection, search highlighting, and link hit testing pass the visible horizontal extent, so they measure only up to the viewport, and the document width uses the measured average advance to estimate the rest of a line. Locating a position measures the line through that position, so moving to the end of a long line measures it once. Recoloring a line or editing it keeps the measured geometry of the fragments before the edit. Bounding every Core Text query to one fragment matters: line-offset queries grow quadratically with line length for mixed-script text. Shaping and bidirectional reordering do not cross fragment boundaries, and fragments use a left-to-right base direction.
 
 Text and selection use separate backing layers sized to the viewport. The caret uses an independent `CALayer`. The document view can be much taller than its drawing surfaces. Moving the selection or blinking the caret does not invalidate line layouts.
 
@@ -265,6 +281,9 @@ The existing checks cover:
 - Context-menu contents and action routing, selection preservation, undoable deletion, read-only validation, non-focusable behavior, delegate modification, replacement, suppression, and custom menu templates.
 - URL detection with UTF-16 offsets and CRLF, punctuation boundaries, web-scheme filtering, glyph hit testing, underline pixels, layout reuse, read-only opening requests, and click cancellation. Browser requests are intercepted during automated checks.
 - Visible-line cache bounds, local invalidation, scrolling, and drawing-surface sizing after shortening a 100,000-line document.
+- File-backed buffers compared with `NSString` decoding across leaf boundaries that split multibyte sequences, randomized edits and snapshot independence, shared-node insertion, byte order marks, ill-formed UTF-8 replacement, empty files, file errors, and editor adoption.
+- Fragmented layout of long lines: measurement bounded by the viewport, exact positions and hit testing across fragments, line-relative tab stops, fragment starts at grapheme cluster boundaries, token precedence across fragments, geometry reuse after edits and recoloring, viewport-bounded drawing and selection, horizontal scrolling to the end of the line, and bounded navigation and Return reads.
+- Load time and memory footprint for a 64 MiB file-backed buffer, and layout timings for a line of about 8 million UTF-16 code units. These Debug measurements do not establish end-to-end latency.
 - Storage construction and random insertion and deletion timings for a 100,000-line buffer. These Debug storage measurements do not establish end-to-end input latency.
 - Search options, line anchors, UTF-16 match ranges, invalid patterns, and match limits; background results, wrapping navigation, synchronous navigation during pending searches, match movement after edits, and highlight pixels confined to matching lines.
 - Substitute highlighters, Core Text colors, unchanged-style cache reuse, stale-result rejection, highlighter removal, theme changes without parsing, and CRLF and UTF-16 edit coordinates.
@@ -276,7 +295,7 @@ Protocol checks do not establish real input-method behavior. Candidate-window pl
 ## Limitations and planned work
 
 1. **Input and performance validation.** Test candidate-window placement, selection replacement, and cancellation with real Chinese Pinyin and Japanese input methods. Use Instruments to measure input and scrolling frame times and record median and 95th-percentile input-to-display latency. Ordinary typing currently records one undo operation per insertion; native typing coalescing and a memory budget for large paste history remain planned.
-2. **Long-line layout.** Each visible logical line currently creates one complete `CTLine`. A line containing a million characters can block the main thread. Grapheme navigation and selection geometry also process complete lines. Segmented layout needs shaping context, a horizontal visibility index, and explicit processing limits. Horizontal scroll width grows with visited lines and can remain wider than necessary after local deletions.
+2. **Long lines and large files.** Measuring a whole long line, for example by moving to its end, takes time proportional to its length: about 0.2 seconds for 8 million ASCII code units and about 2 seconds for 2 million code units of mixed scripts in optimized builds. The document width is an estimate until a line is measured, grows with visited lines, and can remain wider than necessary after local deletions. Syntax highlight requests and the parser still process complete lines, and search and accessibility values materialize the complete document.
 3. **Soft wrapping and bidirectional editing.** Layout currently uses unwrapped logical lines. Soft wrapping requires visual-line and height indices plus width-aware invalidation. Mixed-direction visual movement, caret affinity, and detailed selection behavior also need further work beyond system text shaping.
 4. **Language services.** Extend the optional highlighting interface for additional parsers and languages before adding diagnostics, completion, Language Server Protocol support, or multiple carets.
 

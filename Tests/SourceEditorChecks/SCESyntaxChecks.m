@@ -54,11 +54,26 @@ static NSUInteger SCESyntaxCheckCount;
 
 @end
 
+// Runs the main run loop until every block already submitted to the main queue,
+// such as the editor's result handler, has run. The main queue is FIFO, so a
+// sentinel submitted afterward runs last. A fixed run-loop interval is not
+// enough: other run-loop work can occupy it before the queue is serviced.
+static void SCEDrainMainQueue(void) {
+    __block BOOL drained = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        drained = YES;
+    });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+    while (!drained && deadline.timeIntervalSinceNow > 0) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+    }
+}
+
 static void SCEDeliverHighlight(SCEControlledRequest *request, NSArray<SCESyntaxToken *> *tokens) {
     request.completion([[SCESyntaxHighlightResult alloc] initWithRevision:request.snapshot.revision
                                                              coveredRange:request.range
                                                                    tokens:tokens]);
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+    SCEDrainMainQueue();
 }
 
 static BOOL SCEHasColor(SCELineLayout *layout, NSColor *expected) {
@@ -190,7 +205,7 @@ NSUInteger SCECheckSyntaxCore(void) {
     styles = [editorCache valueForKey:@"syntaxTokens"];
     SYNTAX_CHECK(NSEqualRanges([styles[@0][0] range], NSMakeRange(3, 5)), "a stale result must not recolor newer text");
     latest.completion(nil);
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+    SCEDrainMainQueue();
     styles = [editorCache valueForKey:@"syntaxTokens"];
     SYNTAX_CHECK([styles[@0] count] == 1, "a nil result must keep the current colors");
     SCESyntaxToken *comment = [[SCESyntaxToken alloc] initWithRange:NSMakeRange(0, latest.snapshot.lengthUTF16)

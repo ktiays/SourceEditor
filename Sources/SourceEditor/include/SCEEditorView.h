@@ -135,6 +135,13 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 /// O(1) immutable-node snapshot. The returned buffer can be edited independently.
 - (SCETextBuffer *)bufferSnapshot;
 
+/// Replaces the document with the text of buffer, like setting string, but shares
+/// buffer's immutable storage instead of copying the text. Use it with
+/// -[SCETextBuffer initWithContentsOfURL:error:] to open large files without
+/// decoding them. Resets selection and undo. Later edits to either buffer do not
+/// affect the other.
+- (void)replaceContentsWithBuffer:(SCETextBuffer *)buffer;
+
 - (void)scrollSelectionToVisible;
 
 - (void)undo:(nullable id)sender;

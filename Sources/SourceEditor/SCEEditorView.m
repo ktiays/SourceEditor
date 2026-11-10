@@ -24,6 +24,12 @@ static const CGFloat SCEScopeGuideWidth = 1;
 // The distance, in points, over which each end of the scope guide fades in.
 static const CGFloat SCEScopeGuideFadeLength = 6;
 static const CGFloat SCESearchMatchCornerRadius = 3;
+// Link detection on a longer line scans this many UTF-16 units on each side of
+// the pointer instead of the whole line.
+static const NSUInteger SCELinkDetectionRadius = 2048;
+// Grapheme and word navigation reads this many UTF-16 units on each side of the
+// caret instead of the whole line. Clusters longer than this are split.
+static const NSUInteger SCENavigationReadRadius = 256;
 
 // Returns the index of the first range whose location is at least offset.
 // Ranges must be sorted and non-overlapping.
@@ -167,9 +173,12 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     NSTrackingArea *_linkTrackingArea;
     id _modifierFlagsMonitor;
     NSDataDetector *_linkDetector;
+    // Links found in _detectedLinkRange of one line, with ranges relative to its
+    // start. Long lines are scanned in a window around the pointer.
     NSArray<NSTextCheckingResult *> *_detectedLineLinks;
     NSUInteger _detectedLinkLine;
     NSUInteger _detectedLinkRevision;
+    NSRange _detectedLinkRange;
     NSRange _hoveredLinkRange;
     BOOL _handlingLinkClick;
     NSURL *_pressedLinkURL;
@@ -493,8 +502,10 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
                                                 topInset:SCEInset
                                                 overscan:6];
     [_layoutCache retainLinesInRange:lines];
+    // Long lines report an estimate for their unmeasured fragments, so sizing the
+    // document never lays out text outside the viewport.
     for (NSUInteger i = lines.location; i < NSMaxRange(lines); i++) {
-        _maximumMeasuredWidth = MAX(_maximumMeasuredWidth, [_layoutCache layoutForLineAtIndex:i].width);
+        _maximumMeasuredWidth = MAX(_maximumMeasuredWidth, [_layoutCache layoutForLineAtIndex:i].estimatedWidth);
     }
     if (clip) {
         CGFloat width = MAX(NSWidth(visible), self.textOriginX + _maximumMeasuredWidth + SCEInset);
@@ -640,12 +651,26 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
 }
 
 - (void)setString:(NSString *)string {
+    [self resetDocumentUsingReplacement:^(SCETextBuffer *buffer) {
+        [buffer replaceCharactersInUTF16Range:NSMakeRange(0, buffer.lengthUTF16) withString:string ?: @""];
+    }];
+}
+
+- (void)replaceContentsWithBuffer:(SCETextBuffer *)buffer {
+    NSParameterAssert(buffer);
+    [self resetDocumentUsingReplacement:^(SCETextBuffer *documentBuffer) {
+        [documentBuffer replaceCharactersInUTF16Range:NSMakeRange(0, documentBuffer.lengthUTF16) withBuffer:buffer];
+    }];
+}
+
+// Replaces the whole document and resets selection, undo, and derived state.
+- (void)resetDocumentUsingReplacement:(void (^)(SCETextBuffer *buffer))replacement {
     [self invalidateDetectedLinks];
     SCETextBuffer *before = _syntaxHighlighter ? [_buffer copy] : nil;
     _markedRange = NSMakeRange(NSNotFound, 0);
     _compositionOriginalText = nil;
     [_textInputContext discardMarkedText];
-    [_buffer replaceCharactersInUTF16Range:NSMakeRange(0, _buffer.lengthUTF16) withString:string ?: @""];
+    replacement(_buffer);
     if (before) {
         _pendingSyntaxEdit = [[SCETextEdit alloc] initWithRange:NSMakeRange(0, before.lengthUTF16)
                                             insertedLengthUTF16:_buffer.lengthUTF16
@@ -743,16 +768,29 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     }
 }
 
+// Returns the number of leading spaces and tabs in range. Reads bounded chunks,
+// so the cost does not depend on the length of the rest of the line.
+- (NSUInteger)leadingWhitespaceLengthInUTF16Range:(NSRange)range {
+    unichar characters[256];
+    NSUInteger length = 0;
+    while (length < range.length) {
+        NSUInteger count = MIN(sizeof(characters) / sizeof(*characters), range.length - length);
+        [_buffer getUTF16Characters:characters range:NSMakeRange(range.location + length, count)];
+        for (NSUInteger index = 0; index < count; index++) {
+            if (characters[index] != ' ' && characters[index] != '\t') {
+                return length + index;
+            }
+        }
+        length += count;
+    }
+    return length;
+}
+
 // The guide runs down the opening line's indentation, in text coordinates.
 - (CGFloat)scopeGuideX {
     if (isnan(_scopeGuideX)) {
         NSRange content = [_buffer UTF16RangeOfLine:_scopeGuideOpenLine includingLineEnding:NO];
-        NSString *text = [_buffer substringWithUTF16Range:content];
-        NSUInteger indent = 0;
-        while (indent < text.length &&
-               ([text characterAtIndex:indent] == ' ' || [text characterAtIndex:indent] == '\t')) {
-            indent++;
-        }
+        NSUInteger indent = [self leadingWhitespaceLengthInUTF16Range:content];
         _scopeGuideX = [[_layoutCache layoutForLineAtIndex:_scopeGuideOpenLine] xForUTF16Index:indent];
     }
     return _scopeGuideX;
@@ -833,8 +871,12 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     }
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
     NSRange lineRange = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
-    NSString *text = [_buffer substringWithUTF16Range:lineRange];
-    NSUInteger local = offset - lineRange.location;
+    NSRange window;
+    NSString *text = [self substringOfUTF16Range:lineRange
+                                 nearUTF16Offset:offset
+                                          radius:SCENavigationReadRadius
+                                          window:&window];
+    NSUInteger local = offset - window.location;
     if (local && [text characterAtIndex:local] == '\n' && [text characterAtIndex:local - 1] == '\r') {
         return forward ? offset + 1 : offset - 1;
     }
@@ -842,7 +884,20 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     if (cluster.location == local) {
         return offset;
     }
-    return lineRange.location + (forward ? NSMaxRange(cluster) : cluster.location);
+    return window.location + (forward ? NSMaxRange(cluster) : cluster.location);
+}
+
+// Returns the part of range within radius UTF-16 units of offset, and its
+// document range in window, so that navigation on a long line reads a bounded
+// amount of text.
+- (NSString *)substringOfUTF16Range:(NSRange)range
+                    nearUTF16Offset:(NSUInteger)offset
+                             radius:(NSUInteger)radius
+                             window:(NSRangePointer)window {
+    NSUInteger start = offset > range.location + radius ? offset - radius : range.location;
+    NSUInteger end = MIN(NSMaxRange(range), offset + radius);
+    *window = NSMakeRange(start, end - start);
+    return [_buffer substringWithUTF16Range:*window];
 }
 
 - (void)setSelectedRange:(NSRange)range {
@@ -890,8 +945,9 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
     SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:line];
-    _maximumMeasuredWidth = MAX(_maximumMeasuredWidth, layout.width);
     CGFloat x = self.textOriginX + [layout xForUTF16Index:MIN(offset - range.location, range.length)];
+    // Locating the caret measures the line through it, which refines the estimate.
+    _maximumMeasuredWidth = MAX(_maximumMeasuredWidth, layout.estimatedWidth);
     return NSMakeRect(x, SCEInset + line * _lineHeight, 1, _lineHeight);
 }
 
@@ -954,6 +1010,16 @@ static NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInte
     [self updateCaret];
 }
 
+// The horizontal extent of the text area in line-local coordinates, where x = 0
+// is the start of every line.
+- (CGFloat)visibleLineMinimumX {
+    return NSMinX(_viewportRect) + self.gutterWidth - self.textOriginX;
+}
+
+- (CGFloat)visibleLineMaximumX {
+    return NSMaxX(_viewportRect) - self.textOriginX;
+}
+
 static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFloat baseline) {
     CGContextSaveGState(context);
     CGContextTranslateCTM(context, x, baseline);
@@ -973,6 +1039,11 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
                                                   topInset:SCEInset
                                                   overscan:0];
     CGFloat originX = self.textOriginX - NSMinX(_viewportRect);
+    // Glyphs can extend beyond their advances, so fragments of long lines that
+    // end or start just outside the text area are drawn as well.
+    CGFloat overhang = ceil(_font.pointSize);
+    CGFloat minimumX = self.visibleLineMinimumX;
+    CGFloat maximumX = self.visibleLineMaximumX;
     CGContextSaveGState(context);
     CGContextClipToRect(context, NSMakeRect(self.gutterWidth, 0, MAX(0, NSWidth(surface.bounds) - self.gutterWidth),
                                             NSHeight(surface.bounds)));
@@ -980,14 +1051,20 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
         SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:i];
         CGFloat y = SCEInset + i * _lineHeight - NSMinY(_viewportRect);
         CGFloat baseline = round((y + _baseline) * scale) / scale;
-        SCEDrawCTLine(context, layout.line, originX, baseline);
+        [layout drawInContext:context
+             atBaselineOrigin:CGPointMake(originX, baseline)
+                     minimumX:minimumX - overhang
+                     maximumX:maximumX + overhang];
         if (_hoveredLinkRange.location != NSNotFound) {
             NSRange lineRange = [_buffer UTF16RangeOfLine:i includingLineEnding:NO];
             NSRange overlap = NSIntersectionRange(lineRange, _hoveredLinkRange);
             if (overlap.length) {
                 NSRange local = NSMakeRange(overlap.location - lineRange.location, overlap.length);
                 [_layoutCache.textColor setFill];
-                for (NSValue *value in [layout selectionRectsForUTF16Range:local height:_lineHeight]) {
+                for (NSValue *value in [layout selectionRectsForUTF16Range:local
+                                                                    height:_lineHeight
+                                                                  minimumX:minimumX
+                                                                  maximumX:maximumX]) {
                     NSRect rect = value.rectValue;
                     NSRectFill(NSMakeRect(originX + rect.origin.x, baseline + 2, rect.size.width, 1));
                 }
@@ -999,7 +1076,10 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
             if (overlap.length) {
                 NSRange local = NSMakeRange(overlap.location - lineRange.location, overlap.length);
                 [_layoutCache.textColor setFill];
-                for (NSValue *value in [layout selectionRectsForUTF16Range:local height:_lineHeight]) {
+                for (NSValue *value in [layout selectionRectsForUTF16Range:local
+                                                                    height:_lineHeight
+                                                                  minimumX:minimumX
+                                                                  maximumX:maximumX]) {
                     NSRect rect = value.rectValue;
                     NSRectFill(NSMakeRect(originX + rect.origin.x, baseline + 2, rect.size.width, 1));
                 }
@@ -1080,9 +1160,15 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
             SCELineLayout *layout = [_layoutCache layoutForLineAtIndex:i];
             CGFloat y = SCEInset + i * _lineHeight - NSMinY(_viewportRect);
             CGFloat x = self.textOriginX - NSMinX(_viewportRect);
+            // Rectangles outside the geometry bounds are discarded, so a long
+            // line is measured only as far as the visible selection.
+            CGFloat geometryMaxX = NSMaxX(geometryBounds) - x;
             if (textOverlap.length) {
                 NSRange local = NSMakeRange(textOverlap.location - content.location, textOverlap.length);
-                for (NSValue *value in [layout selectionRectsForUTF16Range:local height:_lineHeight]) {
+                for (NSValue *value in [layout selectionRectsForUTF16Range:local
+                                                                    height:_lineHeight
+                                                                  minimumX:NSMinX(geometryBounds) - x
+                                                                  maximumX:geometryMaxX]) {
                     NSRect rect = value.rectValue;
                     rect.origin.x += x;
                     rect.origin.y += y;
@@ -1093,7 +1179,7 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
                 }
             }
             if (NSMaxRange(overlap) > NSMaxRange(content)) {
-                CGFloat endX = x + [layout xForUTF16Index:content.length];
+                CGFloat endX = x + [layout xForUTF16Index:content.length clampedToMaximumX:geometryMaxX];
                 NSRect rect =
                     NSIntersectionRect(NSMakeRect(endX, y, MAX(0, rightEdge - endX), _lineHeight), geometryBounds);
                 if (!NSIsEmptyRect(rect)) {
@@ -1325,6 +1411,8 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
                                           fallback:NSColor.systemYellowColor];
     CGFloat lineEndingWidth = ceil(_font.pointSize * 0.5);
     CGFloat originX = self.textOriginX - NSMinX(_viewportRect);
+    CGFloat minimumX = self.visibleLineMinimumX;
+    CGFloat maximumX = self.visibleLineMaximumX;
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
     CGContextSaveGState(context);
     CGContextClipToRect(context, NSMakeRect(self.gutterWidth, 0, MAX(0, NSWidth(surface.bounds) - self.gutterWidth),
@@ -1342,12 +1430,15 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
             NSRange textOverlap = NSIntersectionRange(match, content);
             if (textOverlap.length) {
                 NSRange local = NSMakeRange(textOverlap.location - content.location, textOverlap.length);
-                [rects addObjectsFromArray:[layout selectionRectsForUTF16Range:local height:_lineHeight]];
+                [rects addObjectsFromArray:[layout selectionRectsForUTF16Range:local
+                                                                        height:_lineHeight
+                                                                      minimumX:minimumX
+                                                                      maximumX:maximumX]];
             }
             // A match that includes the line ending extends past the last character.
             if (NSMaxRange(match) > NSMaxRange(content) && match.location <= NSMaxRange(content) &&
                 NSMaxRange(wholeLine) > NSMaxRange(content)) {
-                CGFloat endX = [layout xForUTF16Index:content.length];
+                CGFloat endX = [layout xForUTF16Index:content.length clampedToMaximumX:maximumX];
                 [rects addObject:[NSValue valueWithRect:NSMakeRect(endX, 0, lineEndingWidth, _lineHeight)]];
             }
             BOOL isCurrent = matchIndex == currentIndex;
@@ -1727,12 +1818,16 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     }
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset - 1];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
-    NSString *text = [_buffer substringWithUTF16Range:range];
-    NSUInteger local = offset - range.location;
+    NSRange window;
+    NSString *text = [self substringOfUTF16Range:range
+                                 nearUTF16Offset:offset
+                                          radius:SCENavigationReadRadius
+                                          window:&window];
+    NSUInteger local = offset - window.location;
     if (local >= 2 && [text characterAtIndex:local - 1] == '\n' && [text characterAtIndex:local - 2] == '\r') {
         return offset - 2;
     }
-    return range.location + [text rangeOfComposedCharacterSequenceAtIndex:local - 1].location;
+    return window.location + [text rangeOfComposedCharacterSequenceAtIndex:local - 1].location;
 }
 
 - (NSUInteger)nextBoundary:(NSUInteger)offset {
@@ -1741,12 +1836,16 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     }
     NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
     NSRange range = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
-    NSString *text = [_buffer substringWithUTF16Range:range];
-    NSUInteger local = offset - range.location;
+    NSRange window;
+    NSString *text = [self substringOfUTF16Range:range
+                                 nearUTF16Offset:offset
+                                          radius:SCENavigationReadRadius
+                                          window:&window];
+    NSUInteger local = offset - window.location;
     if (local + 1 < text.length && [text characterAtIndex:local] == '\r' && [text characterAtIndex:local + 1] == '\n') {
         return offset + 2;
     }
-    return range.location + NSMaxRange([text rangeOfComposedCharacterSequenceAtIndex:local]);
+    return window.location + NSMaxRange([text rangeOfComposedCharacterSequenceAtIndex:local]);
 }
 
 - (void)deleteRange:(NSRange)range {
@@ -1784,12 +1883,45 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     return _indentationWidth ?: _tabWidth;
 }
 
-- (NSUInteger)indentationColumnsInString:(NSString *)text length:(NSUInteger)length {
+// Returns the display columns of range, which contains only spaces and tabs.
+// Reads bounded chunks, so the cost depends on the indentation alone.
+- (NSUInteger)indentationColumnsInUTF16Range:(NSRange)range {
+    unichar characters[256];
     NSUInteger columns = 0;
-    for (NSUInteger index = 0; index < length; index++) {
-        columns += [text characterAtIndex:index] == '\t' ? _tabWidth - columns % _tabWidth : 1;
+    for (NSUInteger read = 0; read < range.length;) {
+        NSUInteger count = MIN(sizeof(characters) / sizeof(*characters), range.length - read);
+        [_buffer getUTF16Characters:characters range:NSMakeRange(range.location + read, count)];
+        for (NSUInteger index = 0; index < count; index++) {
+            columns += characters[index] == '\t' ? _tabWidth - columns % _tabWidth : 1;
+        }
+        read += count;
     }
     return columns;
+}
+
+// Returns the number of spaces and tabs at the end of range, reading backward in
+// bounded chunks.
+- (NSUInteger)trailingWhitespaceLengthInUTF16Range:(NSRange)range {
+    unichar characters[256];
+    NSUInteger length = 0;
+    while (length < range.length) {
+        NSUInteger count = MIN(sizeof(characters) / sizeof(*characters), range.length - length);
+        NSUInteger end = NSMaxRange(range) - length;
+        [_buffer getUTF16Characters:characters range:NSMakeRange(end - count, count)];
+        for (NSUInteger index = count; index > 0; index--) {
+            if (characters[index - 1] != ' ' && characters[index - 1] != '\t') {
+                return length + count - index;
+            }
+        }
+        length += count;
+    }
+    return length;
+}
+
+- (unichar)characterAtUTF16Offset:(NSUInteger)offset {
+    unichar character = 0;
+    [_buffer getUTF16Characters:&character range:NSMakeRange(offset, 1)];
+    return character;
 }
 
 - (NSString *)indentationForColumnCount:(NSUInteger)columns {
@@ -1889,27 +2021,19 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     NSRange selection = self.selectedRange;
     NSUInteger line = [_buffer lineIndexForUTF16Offset:selection.location];
     NSRange lineRange = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
-    NSString *text = [_buffer substringWithUTF16Range:lineRange];
     NSString *ending = [self lineEndingForLineAtIndex:line];
-    NSUInteger localOffset = MIN(selection.location - lineRange.location, text.length);
-    NSUInteger indentLength = 0;
-    if (_automaticIndentationEnabled) {
-        while (indentLength < localOffset &&
-               ([text characterAtIndex:indentLength] == ' ' || [text characterAtIndex:indentLength] == '\t')) {
-            indentLength++;
-        }
-    }
-    NSUInteger columns = [self indentationColumnsInString:text length:indentLength];
+    // Only the indentation and the whitespace around the caret are read, so
+    // Return costs the same on a long line as on a short one.
+    NSUInteger localOffset = MIN(selection.location - lineRange.location, lineRange.length);
+    NSRange beforeCaret = NSMakeRange(lineRange.location, localOffset);
+    NSUInteger indentLength = _automaticIndentationEnabled ? [self leadingWhitespaceLengthInUTF16Range:beforeCaret] : 0;
+    NSUInteger columns = [self indentationColumnsInUTF16Range:NSMakeRange(lineRange.location, indentLength)];
     NSString *baseIndentation = [self indentationForColumnCount:columns];
     SCEBracketPair *openingPair = nil;
     if (_automaticIndentationEnabled && !hadMarkedText && !selection.length && _languageConfiguration) {
-        NSUInteger openingEnd = localOffset;
-        while (openingEnd &&
-               ([text characterAtIndex:openingEnd - 1] == ' ' || [text characterAtIndex:openingEnd - 1] == '\t')) {
-            openingEnd--;
-        }
+        NSUInteger openingEnd = localOffset - [self trailingWhitespaceLengthInUTF16Range:beforeCaret];
         if (openingEnd) {
-            unichar character = [text characterAtIndex:openingEnd - 1];
+            unichar character = [self characterAtUTF16Offset:lineRange.location + openingEnd - 1];
             for (SCEBracketPair *pair in _languageConfiguration.bracketPairs) {
                 if (pair.expandsOnNewline && pair.openingCharacter == character) {
                     openingPair = pair;
@@ -1926,17 +2050,16 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
         openingPair ? [self indentationForColumnCount:columns + self.effectiveIndentationWidth] : baseIndentation;
     NSString *insertion = [ending stringByAppendingString:innerIndentation];
     if (openingPair) {
-        NSUInteger closingOffset = localOffset;
-        while (closingOffset < text.length &&
-               ([text characterAtIndex:closingOffset] == ' ' || [text characterAtIndex:closingOffset] == '\t')) {
-            closingOffset++;
-        }
+        NSUInteger caret = lineRange.location + localOffset;
+        NSUInteger closingOffset =
+            localOffset + [self leadingWhitespaceLengthInUTF16Range:NSMakeRange(caret, NSMaxRange(lineRange) - caret)];
         BOOL hasAdjacentCloser =
-            closingOffset < text.length && [text characterAtIndex:closingOffset] == openingPair.closingCharacter;
+            closingOffset < lineRange.length &&
+            [self characterAtUTF16Offset:lineRange.location + closingOffset] == openingPair.closingCharacter;
         // A following line may already contain the matching closer, so generate
         // one only when the opener is unmatched and nothing follows the caret.
         BOOL canInsertCloser =
-            _bracketCompletionMode != SCEBracketCompletionModeDisabled && closingOffset == text.length &&
+            _bracketCompletionMode != SCEBracketCompletionModeDisabled && closingOffset == lineRange.length &&
             [self needsClosingBracketForPair:openingPair beforeUTF16Offset:lineRange.location + closingOffset];
         if (hasAdjacentCloser || canInsertCloser) {
             NSMutableString *replacement = [insertion mutableCopy];
@@ -2164,26 +2287,35 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
     }
     offset = MIN(offset, _buffer.lengthUTF16 - 1);
     NSRange range = [_buffer UTF16RangeOfLine:[_buffer lineIndexForUTF16Offset:offset] includingLineEnding:YES];
-    NSString *text = [_buffer substringWithUTF16Range:range];
-    NSRange cluster = [text rangeOfComposedCharacterSequenceAtIndex:offset - range.location];
-    NSInteger kind = SCECharacterClass(text, cluster.location);
-    NSUInteger start = cluster.location;
-    NSUInteger end = NSMaxRange(cluster);
-    while (start) {
-        NSRange previous = [text rangeOfComposedCharacterSequenceAtIndex:start - 1];
-        if (SCECharacterClass(text, previous.location) != kind) {
-            break;
+    // Read a window around the offset and widen it only while the word reaches
+    // a window edge inside the line.
+    for (NSUInteger radius = SCENavigationReadRadius;; radius *= 4) {
+        NSRange window;
+        NSString *text = [self substringOfUTF16Range:range nearUTF16Offset:offset radius:radius window:&window];
+        NSRange cluster = [text rangeOfComposedCharacterSequenceAtIndex:offset - window.location];
+        NSInteger kind = SCECharacterClass(text, cluster.location);
+        NSUInteger start = cluster.location;
+        NSUInteger end = NSMaxRange(cluster);
+        while (start) {
+            NSRange previous = [text rangeOfComposedCharacterSequenceAtIndex:start - 1];
+            if (SCECharacterClass(text, previous.location) != kind) {
+                break;
+            }
+            start = previous.location;
         }
-        start = previous.location;
-    }
-    while (end < text.length) {
-        NSRange next = [text rangeOfComposedCharacterSequenceAtIndex:end];
-        if (SCECharacterClass(text, next.location) != kind) {
-            break;
+        while (end < text.length) {
+            NSRange next = [text rangeOfComposedCharacterSequenceAtIndex:end];
+            if (SCECharacterClass(text, next.location) != kind) {
+                break;
+            }
+            end = NSMaxRange(next);
         }
-        end = NSMaxRange(next);
+        BOOL reachesStart = !start && window.location > range.location;
+        BOOL reachesEnd = end == text.length && NSMaxRange(window) < NSMaxRange(range);
+        if (!reachesStart && !reachesEnd) {
+            return NSMakeRange(window.location + start, end - start);
+        }
     }
-    return NSMakeRange(range.location + start, end - start);
 }
 
 - (NSUInteger)wordBoundary:(BOOL)forward {
@@ -2336,7 +2468,7 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
     NSRange wholeLine = [_buffer UTF16RangeOfLine:line includingLineEnding:YES];
     NSRange lineOverlap = NSIntersectionRange(wholeLine, range);
     if (lineOverlap.length && NSMaxRange(lineOverlap) > NSMaxRange(content) &&
-        localPoint.x >= [layout xForUTF16Index:content.length]) {
+        localPoint.x >= [layout xForUTF16Index:content.length clampedToMaximumX:localPoint.x + 1]) {
         return YES;
     }
     if (!overlap.length) {
@@ -2362,21 +2494,45 @@ static NSInteger SCECharacterClass(NSString *text, NSUInteger index) {
     }
     NSUInteger line = (NSUInteger)floor((point.y - SCEInset) / _lineHeight);
     NSRange content = [_buffer UTF16RangeOfLine:line includingLineEnding:NO];
-    if (!_detectedLineLinks || _detectedLinkLine != line || _detectedLinkRevision != _buffer.revision) {
+    NSRange scanRange = content;
+    BOOL reusesLinks = _detectedLineLinks && _detectedLinkLine == line && _detectedLinkRevision == _buffer.revision;
+    if (content.length > 2 * SCELinkDetectionRadius) {
+        NSUInteger hit = [self UTF16OffsetForDocumentPoint:point];
+        NSUInteger start =
+            hit > content.location + SCELinkDetectionRadius ? hit - SCELinkDetectionRadius : content.location;
+        scanRange = NSMakeRange(start, MIN(NSMaxRange(content), hit + SCELinkDetectionRadius) - start);
+        // Keep the previous window while the pointer stays well inside it.
+        NSUInteger margin = SCELinkDetectionRadius / 2;
+        NSRange previous = _detectedLinkRange;
+        reusesLinks = reusesLinks && hit >= previous.location && hit <= NSMaxRange(previous) &&
+                      (previous.location == content.location || hit - previous.location >= margin) &&
+                      (NSMaxRange(previous) == NSMaxRange(content) || NSMaxRange(previous) - hit >= margin);
+    } else {
+        reusesLinks = reusesLinks && NSEqualRanges(_detectedLinkRange, content);
+    }
+    if (!reusesLinks) {
         if (!_linkDetector) {
             _linkDetector = [NSDataDetector dataDetectorWithTypes:NSTextCheckingTypeLink error:NULL];
         }
-        NSString *text = [_buffer substringWithUTF16Range:content];
+        NSString *text = [_buffer substringWithUTF16Range:scanRange];
         _detectedLineLinks = [_linkDetector matchesInString:text options:0 range:NSMakeRange(0, text.length)];
         _detectedLinkLine = line;
         _detectedLinkRevision = _buffer.revision;
+        _detectedLinkRange = scanRange;
     }
+    scanRange = _detectedLinkRange;
     for (NSTextCheckingResult *match in _detectedLineLinks) {
         NSString *scheme = match.URL.scheme.lowercaseString;
         if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
             continue;
         }
-        NSRange range = NSMakeRange(content.location + match.range.location, match.range.length);
+        // A link that touches an edge of a window inside the line may continue
+        // past it, so its URL could be incomplete.
+        if ((!match.range.location && scanRange.location > content.location) ||
+            (NSMaxRange(match.range) == scanRange.length && NSMaxRange(scanRange) < NSMaxRange(content))) {
+            continue;
+        }
+        NSRange range = NSMakeRange(scanRange.location + match.range.location, match.range.length);
         if ([self isDocumentPoint:point inTextRange:range]) {
             if (effectiveRange) {
                 *effectiveRange = range;

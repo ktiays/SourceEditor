@@ -268,6 +268,32 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     [self.window makeFirstResponder:self.editor];
 }
 
+- (void)openDocument:(id)sender {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+    [panel beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+                      if (response == NSModalResponseOK) {
+                          [self openDocumentAtURL:panel.URL];
+                      }
+                  }];
+}
+
+// Opens a UTF-8 file without decoding it up front. The buffer maps the file and
+// decodes only the text that is displayed or edited, so large files open quickly.
+- (void)openDocumentAtURL:(NSURL *)url {
+    NSError *error = nil;
+    SCETextBuffer *buffer = [[SCETextBuffer alloc] initWithContentsOfURL:url error:&error];
+    if (!buffer) {
+        [[NSAlert alertWithError:error] beginSheetModalForWindow:self.window completionHandler:nil];
+        return;
+    }
+    [self.editor replaceContentsWithBuffer:buffer];
+    self.window.title = url.lastPathComponent;
+    self.window.representedURL = url;
+}
+
 - (void)updateStatus:(NSNotification *)notification {
     SCETextBuffer *snapshot = self.editor.bufferSnapshot;
     NSUInteger offset = self.editor.selectedRange.location;
@@ -293,6 +319,11 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     [self addItem:@"Hide SourceEditor" action:@selector(hide:) key:@"h" toMenu:appMenu];
     [appMenu addItem:NSMenuItem.separatorItem];
     [self addItem:@"Quit SourceEditor" action:@selector(terminate:) key:@"q" toMenu:appMenu];
+    NSMenuItem *fileItem = [[NSMenuItem alloc] init];
+    [main addItem:fileItem];
+    NSMenu *file = [[NSMenu alloc] initWithTitle:@"File"];
+    fileItem.submenu = file;
+    [self addItem:@"Open\u2026" action:@selector(openDocument:) key:@"o" toMenu:file].target = self;
     NSMenuItem *editItem = [[NSMenuItem alloc] init];
     [main addItem:editItem];
     NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];
