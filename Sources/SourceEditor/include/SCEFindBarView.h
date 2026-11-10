@@ -24,7 +24,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, weak, nullable) SCEEditorView *editor;
 
 /// The text in the search field. Setting it during a search updates the
-/// editor's query and selects the first match at or after the search origin.
+/// editor's query and selects the match nearest the search origin, before or
+/// after it: the fewest lines away, then the fewest UTF-16 code units away,
+/// preferring the following match on a tie. Without a match, the caret returns
+/// to the origin. The origin is the start of the editor's selection; it follows
+/// every selection change except the find bar's own match selection, so
+/// continued typing keeps searching near the original caret position.
 @property (nonatomic, copy) NSString *searchString;
 
 /// The match options shown by the option buttons in the search field.

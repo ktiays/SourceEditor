@@ -10,6 +10,9 @@ static const CGFloat SCEFindBarOptionButtonWidth = 32;
 static const CGFloat SCEFindBarGlassSpacing = 8;
 static const CGFloat SCEFindBarButtonSize = 28;
 static const CGFloat SCEFindBarMinimumFieldWidth = 180;
+// Locating the match nearest the search origin searches at most this many UTF-16
+// code units on the main thread; the background search covers the rest.
+static const NSUInteger SCEFindBarOriginLookaheadLength = 1 << 15;
 
 @interface SCEFindBarView () <NSTextFieldDelegate>
 @end
@@ -105,7 +108,11 @@ static const CGFloat SCEFindBarMinimumFieldWidth = 180;
     id _searchResultsObserver;
     id _selectionObserver;
     // UTF-16 offset from which incremental matching starts after the query changes.
+    // Where the match selected while typing a search string is searched from:
+    // the start of the editor's selection, updated whenever the selection changes
+    // for any reason other than the find bar selecting a match.
     NSUInteger _searchOrigin;
+    BOOL _selectingMatch;
     // Set when the query changes; cleared after the resulting match is selected.
     BOOL _selectsMatchFromSearchOrigin;
 }
@@ -333,7 +340,7 @@ static const CGFloat SCEFindBarMinimumFieldWidth = 180;
                                                  object:editor
                                                   queue:nil
                                              usingBlock:^(NSNotification *note) {
-                                                 [weakSelf updateStatus];
+                                                 [weakSelf editorSelectionDidChange];
                                              }];
     }
     if (_searching) {
@@ -353,11 +360,23 @@ static const CGFloat SCEFindBarMinimumFieldWidth = 180;
     _selectionObserver = nil;
 }
 
-// Selects the match from the origin as soon as the known matches determine it,
-// which is usually before the whole document is searched.
+// Clicking, typing, or moving the caret in the editor moves the search origin,
+// so the next search string is searched from the caret instead of from where
+// the search began.
+- (void)editorSelectionDidChange {
+    if (_searching && !_selectingMatch) {
+        _searchOrigin = _editor.selectedRange.location;
+    }
+    [self updateStatus];
+}
+
+// Selects the match nearest the origin as soon as it is known. A bounded search
+// of the lines around the origin usually finds it at once, even when the origin
+// is outside the viewport and the background search has not reached it yet.
 - (void)searchResultsDidChange {
     if (_selectsMatchFromSearchOrigin &&
-        [_editor canSelectNextSearchMatchFromUTF16OffsetWithoutSearching:_searchOrigin]) {
+        [_editor locateSearchMatchNearestUTF16Offset:_searchOrigin
+                          searchingAtMostUTF16Length:SCEFindBarOriginLookaheadLength]) {
         [self selectMatchFromSearchOrigin];
     }
     [self updateStatus];
@@ -422,13 +441,17 @@ static const CGFloat SCEFindBarMinimumFieldWidth = 180;
     [self searchResultsDidChange];
 }
 
-// Selects the first match at or after the origin, wrapping to the first match.
-// Without matches, the caret remains at the origin. The editor locates the
-// match with a binary search, so the cost does not grow with the match count.
+// Selects the match nearest the origin, before or after it, so the selection
+// stays near the content around the caret. Without matches, the caret returns to
+// the origin. Known matches are located by binary search, so the cost does not
+// grow with the match count.
 - (void)selectMatchFromSearchOrigin {
     _selectsMatchFromSearchOrigin = NO;
-    _editor.selectedRange = NSMakeRange(_searchOrigin, 0);
-    [_editor selectNextSearchMatch];
+    _selectingMatch = YES;
+    if (![_editor selectSearchMatchNearestUTF16Offset:_searchOrigin]) {
+        _editor.selectedRange = NSMakeRange(MIN(_searchOrigin, _editor.bufferSnapshot.lengthUTF16), 0);
+    }
+    _selectingMatch = NO;
 }
 
 - (void)beginSearch {

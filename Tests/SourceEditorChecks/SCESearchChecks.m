@@ -160,10 +160,10 @@ static void SCECheckProgressiveSearch(void) {
     SEARCH_CHECK(initial.count >= 2 && initial.count < reference.count &&
                      [initial isEqualToArray:[reference subarrayWithRange:NSMakeRange(0, initial.count)]],
                  "the viewport must be searched synchronously before the rest of the document");
-    SEARCH_CHECK([editor canSelectNextSearchMatchFromUTF16OffsetWithoutSearching:0],
+    SEARCH_CHECK([editor locateSearchMatchNearestUTF16Offset:0 searchingAtMostUTF16Length:0],
                  "a viewport match after the caret must be selectable without searching");
     NSUInteger farOffset = editor.bufferSnapshot.lengthUTF16 * 3 / 5;
-    SEARCH_CHECK(![editor canSelectNextSearchMatchFromUTF16OffsetWithoutSearching:farOffset],
+    SEARCH_CHECK(![editor locateSearchMatchNearestUTF16Offset:farOffset searchingAtMostUTF16Length:0],
                  "unsearched lines after an offset must leave its next match undetermined");
 
     // Navigation searches only toward the requested match.
@@ -270,11 +270,132 @@ static void SCECheckSearchLimit(void) {
     puts("PASS search limit: background collection stops, navigation continues");
 }
 
+// The nearest reference match by the find bar's rule: fewest lines away, then
+// fewest UTF-16 code units, preferring the following match on a tie.
+static NSRange SCEReferenceNearestMatch(NSArray<NSValue *> *matches, SCETextBuffer *buffer, NSUInteger offset) {
+    NSRange best = NSMakeRange(NSNotFound, 0);
+    NSUInteger bestLines = NSUIntegerMax;
+    NSUInteger bestLength = NSUIntegerMax;
+    NSUInteger line = [buffer lineIndexForUTF16Offset:offset];
+    for (NSValue *value in matches) {
+        NSRange match = value.rangeValue;
+        NSUInteger matchLine = [buffer lineIndexForUTF16Offset:match.location];
+        NSUInteger lines = matchLine > line ? matchLine - line : line - matchLine;
+        NSUInteger length = match.location >= offset     ? match.location - offset
+                            : NSMaxRange(match) > offset ? 0
+                                                         : offset - NSMaxRange(match);
+        if (match.location < offset && NSMaxRange(match) > offset) {
+            lines = 0;
+        }
+        // Strictly smaller wins, so the earlier (preceding) match keeps a tie only
+        // when the following one is farther; a following match wins exact ties.
+        if (lines < bestLines || (lines == bestLines && length < bestLength) ||
+            (lines == bestLines && length == bestLength && match.location >= offset)) {
+            best = match;
+            bestLines = lines;
+            bestLength = length;
+        }
+    }
+    return best;
+}
+
+static SCEFindBarView *SCEFindBarForEditor(SCEEditorView *editor) {
+    SCEFindBarView *findBar = [[SCEFindBarView alloc] initWithFrame:NSMakeRect(0, 0, 400, 40)];
+    findBar.editor = editor;
+    [findBar beginSearch];
+    return findBar;
+}
+
+// Typing a search string selects the match nearest the caret, before or after
+// it, and keeps the caret position as the origin until the caret moves.
+static void SCECheckFindBarOrigin(void) {
+    // The caret at the end of the document selects the last match instead of
+    // wrapping to the first.
+    SCEEditorView *small = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
+    small.string = @"beta one\nbeta two\nplain\nbeta three\nplain end";
+    small.selectedRange = NSMakeRange(small.bufferSnapshot.lengthUTF16, 0);
+    SCEFindBarView *findBar = SCEFindBarForEditor(small);
+    findBar.searchString = @"beta";
+    SEARCH_CHECK(NSEqualRanges(small.selectedRange, NSMakeRange(24, 4)),
+                 "a caret at the end of the document must select the last match, not the first");
+    [findBar endSearch];
+
+    // A match on a nearer line wins over a nearer offset, in either direction.
+    NSMutableString *text = [NSMutableString string];
+    for (NSUInteger line = 0; line < 80; line++) {
+        if (line == 0 || line == 42 || line == 60) {
+            [text appendString:@"needle here\n"];
+        } else if (line == 50) {
+            [text appendString:@"needs only\n"];
+        } else {
+            [text appendString:@"plain text line\n"];
+        }
+    }
+    SCEEditorView *editor = [[SCEEditorView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
+    editor.string = text;
+    SCETextBuffer *buffer = editor.bufferSnapshot;
+    NSUInteger origin = [buffer UTF16RangeOfLine:52 includingLineEnding:NO].location + 3;
+    editor.selectedRange = NSMakeRange(origin, 0);
+    findBar = SCEFindBarForEditor(editor);
+    findBar.searchString = @"need";
+    NSRange line50 = [buffer UTF16RangeOfLine:50 includingLineEnding:NO];
+    SEARCH_CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(line50.location, 4)),
+                 "the match two lines above must win over matches farther below");
+
+    // Refining the string searches from the original caret, not from the selected
+    // match: line 60 is nearer to line 52 than line 42 is, but not to line 50.
+    findBar.searchString = @"needle";
+    NSRange line60 = [buffer UTF16RangeOfLine:60 includingLineEnding:NO];
+    SEARCH_CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(line60.location, 6)),
+                 "continued typing must search near the original caret position");
+    findBar.searchString = @"needlex";
+    SEARCH_CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(origin, 0)),
+                 "a string without matches must return the caret to the original position");
+    findBar.searchString = @"needle";
+    SEARCH_CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(line60.location, 6)),
+                 "the origin must survive a string without matches");
+
+    // Moving the caret moves the origin.
+    NSRange line43 = [buffer UTF16RangeOfLine:43 includingLineEnding:NO];
+    editor.selectedRange = NSMakeRange(line43.location, 0);
+    findBar.searchString = @"needle here";
+    NSRange line42 = [buffer UTF16RangeOfLine:42 includingLineEnding:NO];
+    SEARCH_CHECK(NSEqualRanges(editor.selectedRange, NSMakeRange(line42.location, 11)),
+                 "moving the caret during a search must move the search origin");
+    [findBar endSearch];
+
+    // In a large document, the nearest match is found around a caret outside the
+    // viewport without waiting for the background search.
+    NSScrollView *scroll = [SCEEditorView scrollableEditorView];
+    scroll.frame = NSMakeRect(0, 0, 600, 400);
+    SCEEditorView *large = (SCEEditorView *)scroll.documentView;
+    large.string = SCESearchDocument(60000);
+    large.selectedRange = NSMakeRange(0, 0);
+    findBar = SCEFindBarForEditor(large);
+    for (NSUInteger index = 0; index < 4; index++) {
+        NSUInteger caret = large.bufferSnapshot.lengthUTF16 * (2 * index + 1) / 8;
+        large.selectedRange = NSMakeRange(caret, 0);
+        findBar.searchString = index % 2 ? @"crlf needle" : @"needle";
+        SEARCH_CHECK(large.isSearchPending, "the nearest match must be selected before the background search ends");
+        NSRange expected = SCEReferenceNearestMatch(SCEReferenceMatches(large), large.bufferSnapshot, caret);
+        SEARCH_CHECK(NSEqualRanges(large.selectedRange, expected),
+                     "typing must select the match nearest a caret outside the viewport");
+    }
+    large.selectedRange = NSMakeRange(large.bufferSnapshot.lengthUTF16, 0);
+    findBar.searchString = @"needle";
+    NSArray<NSValue *> *reference = SCEReferenceMatches(large);
+    SEARCH_CHECK(NSEqualRanges(large.selectedRange, reference.lastObject.rangeValue),
+                 "a caret at the end of a large document must select its last match");
+    [findBar endSearch];
+    puts("PASS find bar origin: nearest match in either direction, stable origin while typing, caret-driven origin");
+}
+
 NSUInteger SCECheckIncrementalSearch(void) {
     SCECheckLineLocality();
     SCECheckProgressiveSearch();
     SCECheckWholeDocumentSearch();
     SCECheckSearchLimit();
+    SCECheckFindBarOrigin();
     return SCESearchCheckCount;
 }
 

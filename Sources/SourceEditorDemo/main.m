@@ -164,8 +164,10 @@ static NSString *SCEDemoSyntaxLanguageName(SCEDemoSyntaxLanguage language) {
     [content addSubview:self.statusBar];
     CGFloat statusBarInset = self.statusBar.hasVisibleItems ? SCEStatusBarHeight : 0;
     self.statusBar.hidden = !self.statusBar.hasVisibleItems;
+    // The scroll view lays out its scrollers within the content insets, so the
+    // scrollers end above the status bar without separate scroller insets, which
+    // would add the inset a second time.
     scroll.contentInsets = NSEdgeInsetsMake(0, 0, statusBarInset, 0);
-    scroll.scrollerInsets = NSEdgeInsetsMake(0, 0, statusBarInset, 0);
     [NSLayoutConstraint activateConstraints:@[
         [scroll.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [scroll.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],

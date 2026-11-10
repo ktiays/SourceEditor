@@ -233,6 +233,12 @@ NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInteger cou
 // Returns the unsearched lines from start to the end of its run in lines, limited
 // to about SCETextSearchChunkLength UTF-16 code units.
 - (NSRange)chunkOfLines:(NSIndexSet *)lines startingAtLine:(NSUInteger)start {
+    return [self chunkOfLines:lines startingAtLine:start maximumLength:SCETextSearchChunkLength];
+}
+
+// Returns the unsearched lines from start to the end of its run in lines, limited
+// to whole lines within maximumLength UTF-16 code units but at least one line.
+- (NSRange)chunkOfLines:(NSIndexSet *)lines startingAtLine:(NSUInteger)start maximumLength:(NSUInteger)maximumLength {
     __block NSUInteger runEnd = start + 1;
     [lines enumerateRangesInRange:NSMakeRange(start, _buffer.lineCount - start)
                           options:0
@@ -242,8 +248,8 @@ NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInteger cou
                        }];
     NSUInteger startOffset = [_buffer UTF16RangeOfLine:start includingLineEnding:YES].location;
     NSUInteger end = runEnd;
-    if (_buffer.lengthUTF16 - startOffset > SCETextSearchChunkLength) {
-        NSUInteger limit = [_buffer lineIndexForUTF16Offset:startOffset + SCETextSearchChunkLength];
+    if (_buffer.lengthUTF16 - startOffset > maximumLength) {
+        NSUInteger limit = [_buffer lineIndexForUTF16Offset:startOffset + maximumLength];
         end = MIN(end, MAX(start + 1, limit));
     }
     return NSMakeRange(start, end - start);
@@ -454,20 +460,26 @@ NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInteger cou
 // MARK: Navigation
 
 // Returns the index of the first match that starts at or after offset, or
-// NSNotFound when no match follows. Sets determined to NO, without searching,
-// when searching is NO and unsearched text could contain an earlier match.
+// NSNotFound when no match follows. Searches unsearched text synchronously while
+// remainingLength, in UTF-16 code units, allows, and deducts what it searches;
+// NSUIntegerMax searches without limit. Sets determined to NO when unsearched
+// text beyond the limit could contain an earlier match.
 - (NSUInteger)indexOfFirstMatchAtOrAfterUTF16Offset:(NSUInteger)offset
-                                          searching:(BOOL)searching
+                                    remainingLength:(NSUInteger *)remainingLength
                                          determined:(BOOL *)determined {
+    BOOL unlimited = *remainingLength == NSUIntegerMax;
     *determined = YES;
     if (_error || !_query.pattern.length) {
         return NSNotFound;
     }
     if (_searchesWholeDocument) {
         if (_wholeDocumentStale) {
-            if (!searching) {
+            if (!unlimited && _buffer.lengthUTF16 > *remainingLength) {
                 *determined = NO;
                 return NSNotFound;
+            }
+            if (!unlimited) {
+                *remainingLength -= _buffer.lengthUTF16;
             }
             [self searchWholeDocumentSynchronously];
             [self setNeedsNotificationForLineRange:NSMakeRange(0, _buffer.lineCount)];
@@ -486,11 +498,17 @@ NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInteger cou
         if (unsearched == NSNotFound || unsearched > lastLine) {
             return index < count ? index : NSNotFound;
         }
-        if (!searching) {
-            *determined = NO;
-            return NSNotFound;
+        NSRange chunk = [self chunkOfLines:_unsearchedLines
+                            startingAtLine:unsearched
+                             maximumLength:MIN(SCETextSearchChunkLength, *remainingLength)];
+        NSUInteger chunkLength = [self UTF16RangeOfLineRange:chunk].length;
+        if (!unlimited) {
+            if (!*remainingLength || chunkLength > *remainingLength) {
+                *determined = NO;
+                return NSNotFound;
+            }
+            *remainingLength -= chunkLength;
         }
-        NSRange chunk = [self chunkOfLines:_unsearchedLines startingAtLine:unsearched];
         [self searchLineRangeSynchronously:chunk];
         [self setNeedsNotificationForLineRange:chunk];
     }
@@ -531,9 +549,12 @@ NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInteger cou
     }
     offset = MIN(offset, _buffer.lengthUTF16);
     BOOL determined;
-    NSUInteger index = [self indexOfFirstMatchAtOrAfterUTF16Offset:offset searching:YES determined:&determined];
+    NSUInteger remainingLength = NSUIntegerMax;
+    NSUInteger index = [self indexOfFirstMatchAtOrAfterUTF16Offset:offset
+                                                   remainingLength:&remainingLength
+                                                        determined:&determined];
     if (index == NSNotFound && offset > 0) {
-        index = [self indexOfFirstMatchAtOrAfterUTF16Offset:0 searching:YES determined:&determined];
+        index = [self indexOfFirstMatchAtOrAfterUTF16Offset:0 remainingLength:&remainingLength determined:&determined];
     }
     return index;
 }
@@ -550,18 +571,104 @@ NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *ranges, NSUInteger cou
     return index;
 }
 
-- (BOOL)canLocateNextMatchFromUTF16OffsetWithoutSearching:(NSUInteger)offset {
-    if (_invalidated) {
-        return YES;
+// Searches every unsearched line in lines, in chunks, while remainingLength
+// allows, and deducts what it searches; NSUIntegerMax searches without limit.
+// Returns whether no unsearched line remains in lines.
+- (BOOL)searchUnsearchedLinesInRange:(NSRange)lines remainingLength:(NSUInteger *)remainingLength {
+    while (YES) {
+        NSUInteger start = [_unsearchedLines indexGreaterThanOrEqualToIndex:lines.location];
+        if (start == NSNotFound || start >= NSMaxRange(lines)) {
+            return YES;
+        }
+        NSRange chunk = [self chunkOfLines:_unsearchedLines
+                            startingAtLine:start
+                             maximumLength:MIN(SCETextSearchChunkLength, *remainingLength)];
+        chunk.length = MIN(chunk.length, NSMaxRange(lines) - start);
+        if (*remainingLength != NSUIntegerMax) {
+            NSUInteger length = [self UTF16RangeOfLineRange:chunk].length;
+            if (length > *remainingLength) {
+                return NO;
+            }
+            *remainingLength -= length;
+        }
+        [self searchLineRangeSynchronously:chunk];
+        [self setNeedsNotificationForLineRange:chunk];
+    }
+}
+
+// Returns the known match nearest offset by the rule of
+// indexOfMatchNearestUTF16Offset:searchingAtMostUTF16Length:determined:. Only
+// the last match before offset and the first match after it can be nearest.
+- (NSUInteger)indexOfKnownMatchNearestUTF16Offset:(NSUInteger)offset {
+    const NSRange *matches = self.matchRanges;
+    NSUInteger count = self.numberOfMatches;
+    NSUInteger following = SCEIndexOfFirstRangeStartingAtOrAfter(matches, count, offset);
+    NSUInteger preceding = following > 0 ? following - 1 : NSNotFound;
+    if (following == count) {
+        following = NSNotFound;
+    }
+    if (preceding == NSNotFound || following == NSNotFound) {
+        return preceding == NSNotFound ? following : preceding;
+    }
+    if (NSMaxRange(matches[preceding]) > offset) {
+        return preceding;
+    }
+    NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
+    NSUInteger precedingLines = line - [_buffer lineIndexForUTF16Offset:matches[preceding].location];
+    NSUInteger followingLines = [_buffer lineIndexForUTF16Offset:matches[following].location] - line;
+    if (precedingLines != followingLines) {
+        return precedingLines < followingLines ? preceding : following;
+    }
+    NSUInteger precedingLength = offset - NSMaxRange(matches[preceding]);
+    NSUInteger followingLength = matches[following].location - offset;
+    return precedingLength < followingLength ? preceding : following;
+}
+
+- (NSUInteger)indexOfMatchNearestUTF16Offset:(NSUInteger)offset
+                  searchingAtMostUTF16Length:(NSUInteger)maximumLength
+                                  determined:(BOOL *)determined {
+    *determined = YES;
+    if (_invalidated || _error || !_query.pattern.length) {
+        return NSNotFound;
     }
     offset = MIN(offset, _buffer.lengthUTF16);
-    BOOL determined;
-    NSUInteger index = [self indexOfFirstMatchAtOrAfterUTF16Offset:offset searching:NO determined:&determined];
-    if (!determined || index != NSNotFound || !offset) {
-        return determined;
+    if (_searchesWholeDocument) {
+        if (_wholeDocumentStale) {
+            if (maximumLength != NSUIntegerMax && _buffer.lengthUTF16 > maximumLength) {
+                *determined = NO;
+                return NSNotFound;
+            }
+            [self searchWholeDocumentSynchronously];
+            [self setNeedsNotificationForLineRange:NSMakeRange(0, _buffer.lineCount)];
+        }
+        return [self indexOfKnownMatchNearestUTF16Offset:offset];
     }
-    [self indexOfFirstMatchAtOrAfterUTF16Offset:0 searching:NO determined:&determined];
-    return determined;
+    // Search a window of lines centered on the offset's line and widen it until
+    // it contains the nearest known match. Every line in the window is searched,
+    // so a nearer match would have to lie outside it, farther away in lines.
+    NSUInteger remainingLength = maximumLength;
+    NSUInteger line = [_buffer lineIndexForUTF16Offset:offset];
+    NSUInteger lineCount = _buffer.lineCount;
+    NSUInteger radius = 0;
+    while (YES) {
+        NSUInteger first = line > radius ? line - radius : 0;
+        NSUInteger end = MIN(lineCount, line + radius + 1);
+        if (![self searchUnsearchedLinesInRange:NSMakeRange(first, end - first) remainingLength:&remainingLength]) {
+            *determined = NO;
+            return NSNotFound;
+        }
+        NSUInteger index = [self indexOfKnownMatchNearestUTF16Offset:offset];
+        if (index != NSNotFound) {
+            NSUInteger matchLine = [_buffer lineIndexForUTF16Offset:self.matchRanges[index].location];
+            if ((matchLine > line ? matchLine - line : line - matchLine) <= radius) {
+                return index;
+            }
+        }
+        if (!first && end == lineCount) {
+            return index;
+        }
+        radius = radius ? radius * 2 : 1;
+    }
 }
 
 // MARK: Notification

@@ -93,8 +93,16 @@ FOUNDATION_EXPORT NSUInteger SCEIndexOfFirstRangeEndingAfter(const NSRange *rang
 /// unsearched text synchronously, but only as far as needed to determine the match.
 - (NSUInteger)indexOfPreviousMatchBeforeUTF16Offset:(NSUInteger)offset;
 
-/// Returns whether indexOfNextMatchFromUTF16Offset: can return without searching.
-- (BOOL)canLocateNextMatchFromUTF16OffsetWithoutSearching:(NSUInteger)offset;
+/// Returns the index of the match nearest offset: the fewest lines away, then the
+/// fewest UTF-16 code units away, preferring the following match on a tie. A
+/// match that contains offset is nearest. Searches unsearched lines around
+/// offset synchronously, widening outward, at most maximumLength UTF-16 code
+/// units in whole lines; pass NSUIntegerMax for no limit. Returns NSNotFound when
+/// the document has no match. Sets determined to NO, and returns NSNotFound, when
+/// unsearched text beyond the limit could contain a nearer match.
+- (NSUInteger)indexOfMatchNearestUTF16Offset:(NSUInteger)offset
+                  searchingAtMostUTF16Length:(NSUInteger)maximumLength
+                                  determined:(BOOL *)determined;
 
 /// Cancels background work. The session no longer changes or notifies its delegate.
 - (void)invalidate;

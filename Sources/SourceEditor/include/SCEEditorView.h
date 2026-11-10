@@ -32,6 +32,11 @@ FOUNDATION_EXPORT NSNotificationName const SCEEditorSearchResultsDidChangeNotifi
 
 /// An AppKit document view that renders plain text with Core Text.
 /// Assign it to an NSScrollView's documentView or use +scrollableEditorView.
+/// As the document view, the editor sets the scroll view's left scroller inset
+/// to the width of the line-number gutter and updates it when that width
+/// changes, so the horizontal scroller spans only the text. It leaves the other
+/// scroller insets unchanged and resets the left inset when it leaves the
+/// scroll view.
 /// Access the view on the main thread. All ranges count UTF-16 code units.
 @interface SCEEditorView : NSView <NSTextInputClient, NSUserInterfaceValidations>
 

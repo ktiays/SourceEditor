@@ -95,6 +95,10 @@ static const NSUInteger SCENavigationReadRadius = 256;
     NSTimer *_autoscrollTimer;
     id _clipBoundsObserver;
     id _clipFrameObserver;
+    // The scroll view whose left scroller inset the editor keeps equal to the
+    // gutter width, and the inset it last set there.
+    __weak NSScrollView *_insetScrollView;
+    CGFloat _appliedScrollerLeftInset;
     id _windowKeyObserver;
     id _windowResignObserver;
     id _systemColorsObserver;
@@ -351,6 +355,11 @@ static const NSUInteger SCENavigationReadRadius = 256;
     [self updateCaret];
 }
 
+- (void)viewWillMoveToSuperview:(NSView *)newSuperview {
+    [super viewWillMoveToSuperview:newSuperview];
+    [self restoreScrollerInsets];
+}
+
 - (void)viewDidMoveToSuperview {
     [super viewDidMoveToSuperview];
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
@@ -447,10 +456,43 @@ static const NSUInteger SCENavigationReadRadius = 256;
     return self.gutterWidth + SCEInset;
 }
 
+// Keeps the horizontal scroller clear of the line numbers by setting the
+// enclosing scroll view's left scroller inset to the gutter width. Other insets
+// stay as the host set them.
+- (void)updateScrollerInsets {
+    NSScrollView *scroll = self.enclosingScrollView;
+    if (scroll.documentView != self) {
+        return;
+    }
+    CGFloat inset = self.gutterWidth;
+    NSEdgeInsets insets = scroll.scrollerInsets;
+    if (scroll == _insetScrollView && insets.left == inset) {
+        return;
+    }
+    _insetScrollView = scroll;
+    _appliedScrollerLeftInset = inset;
+    insets.left = inset;
+    // Tiling may resize the clip view and update the viewport reentrantly.
+    scroll.scrollerInsets = insets;
+}
+
+// Returns the scroller inset of a scroll view the editor leaves, unless the host
+// has changed it since.
+- (void)restoreScrollerInsets {
+    NSScrollView *scroll = _insetScrollView;
+    _insetScrollView = nil;
+    NSEdgeInsets insets = scroll.scrollerInsets;
+    if (scroll && insets.left == _appliedScrollerLeftInset) {
+        insets.left = 0;
+        scroll.scrollerInsets = insets;
+    }
+}
+
 - (void)updateViewport {
     if (_updatingViewport || !_buffer) {
         return;
     }
+    [self updateScrollerInsets];
     _updatingViewport = YES;
     NSClipView *clip = self.enclosingScrollView.contentView;
     NSRect visible = clip ? clip.bounds : self.bounds;
@@ -1436,7 +1478,9 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
 }
 
 - (BOOL)selectNextSearchMatch {
-    NSUInteger index = [_searchSession indexOfNextMatchFromUTF16Offset:self.searchOffsetAfterSelection];
+    // Messaging a nil session returns 0, not NSNotFound, so check it first.
+    NSUInteger index =
+        _searchSession ? [_searchSession indexOfNextMatchFromUTF16Offset:self.searchOffsetAfterSelection] : NSNotFound;
     if (index == NSNotFound) {
         return NO;
     }
@@ -1445,7 +1489,10 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
 }
 
 - (BOOL)selectPreviousSearchMatch {
-    NSUInteger index = [_searchSession indexOfPreviousMatchBeforeUTF16Offset:self.selectedRange.location];
+    // Messaging a nil session returns 0, not NSNotFound, so check it first.
+    NSUInteger index = _searchSession
+                           ? [_searchSession indexOfPreviousMatchBeforeUTF16Offset:self.selectedRange.location]
+                           : NSNotFound;
     if (index == NSNotFound) {
         return NO;
     }
@@ -1453,8 +1500,25 @@ static void SCEDrawCTLine(CGContextRef context, CTLineRef line, CGFloat x, CGFlo
     return YES;
 }
 
-- (BOOL)canSelectNextSearchMatchFromUTF16OffsetWithoutSearching:(NSUInteger)offset {
-    return !_searchSession || [_searchSession canLocateNextMatchFromUTF16OffsetWithoutSearching:offset];
+- (BOOL)locateSearchMatchNearestUTF16Offset:(NSUInteger)offset searchingAtMostUTF16Length:(NSUInteger)maximumLength {
+    BOOL determined = YES;
+    [_searchSession indexOfMatchNearestUTF16Offset:offset
+                        searchingAtMostUTF16Length:maximumLength
+                                        determined:&determined];
+    return determined;
+}
+
+- (BOOL)selectSearchMatchNearestUTF16Offset:(NSUInteger)offset {
+    BOOL determined;
+    NSUInteger index = _searchSession ? [_searchSession indexOfMatchNearestUTF16Offset:offset
+                                                            searchingAtMostUTF16Length:NSUIntegerMax
+                                                                            determined:&determined]
+                                      : NSNotFound;
+    if (index == NSNotFound) {
+        return NO;
+    }
+    self.selectedRange = _searchSession.matchRanges[index];
+    return YES;
 }
 
 // Highlights the matches on visible lines. Each line is located with a binary

@@ -920,6 +920,19 @@ static void SCECheckEditorSearch(void) {
     notifications = 0;
     editor.searchQuery = nil;
     CHECK(notifications == 1 && !editor.searchError && !editor.isSearchPending, "clearing the query must reset state");
+    CHECK(![editor selectNextSearchMatch] && ![editor selectPreviousSearchMatch],
+          "navigation without a query must fail");
+
+    // Clearing the find bar's search string clears the query while the find bar
+    // still selects from its search origin.
+    SCEFindBarView *findBar = [[SCEFindBarView alloc] initWithFrame:NSMakeRect(0, 0, 400, 40)];
+    findBar.editor = editor;
+    [findBar beginSearch];
+    findBar.searchString = @"beta";
+    CHECK(editor.numberOfSearchMatches == 3, "the find bar must apply its search string");
+    findBar.searchString = @"";
+    CHECK(!editor.searchQuery && editor.numberOfSearchMatches == 0, "an empty search string must clear the query");
+    [findBar endSearch];
 
     // Highlight rendering: only the line containing the match changes.
     editor.string = @"none\nnone\nthe target\n";
@@ -955,6 +968,39 @@ static void SCECheckEditorSearch(void) {
           "replacing the document must search the new text");
     [NSNotificationCenter.defaultCenter removeObserver:observer];
     puts("PASS editor search: background results, navigation and wrapping, edits, errors, highlight rendering");
+}
+
+// The horizontal scroller starts after the line numbers, follows the gutter
+// width, and keeps the host's other scroller insets.
+static void SCECheckScrollerInsets(void) {
+    NSScrollView *scroll = [SCEEditorView scrollableEditorView];
+    scroll.frame = NSMakeRect(0, 0, 600, 400);
+    scroll.scrollerInsets = NSEdgeInsetsMake(0, 0, 28, 0);
+    SCEEditorView *editor = (SCEEditorView *)scroll.documentView;
+    NSMutableString *text = [NSMutableString stringWithString:[@"" stringByPaddingToLength:4000
+                                                                                withString:@"wide "
+                                                                           startingAtIndex:0]];
+    for (NSUInteger line = 0; line < 999; line++) {
+        [text appendString:@"\nline"];
+    }
+    editor.string = text;
+    CGFloat gutter = [[editor valueForKey:@"gutterWidth"] doubleValue];
+    CHECK(gutter > 0 && scroll.scrollerInsets.left == gutter && scroll.scrollerInsets.bottom == 28,
+          "the left scroller inset must equal the gutter width and keep other insets");
+    [scroll tile];
+    CHECK(NSMinX(scroll.horizontalScroller.frame) >= gutter, "the horizontal scroller must start after the gutter");
+    [text appendString:[@"" stringByPaddingToLength:600000 withString:@"\nx" startingAtIndex:0]];
+    editor.string = text;
+    CGFloat wider = [[editor valueForKey:@"gutterWidth"] doubleValue];
+    CHECK(wider > gutter && scroll.scrollerInsets.left == wider, "the inset must follow a wider gutter");
+    editor.showsLineNumbers = NO;
+    CHECK(scroll.scrollerInsets.left == 0, "hiding line numbers must remove the inset");
+    editor.showsLineNumbers = YES;
+    CHECK(scroll.scrollerInsets.left == wider, "showing line numbers must restore the inset");
+    scroll.documentView = nil;
+    CHECK(scroll.scrollerInsets.left == 0 && scroll.scrollerInsets.bottom == 28,
+          "removing the editor must reset only the inset it set");
+    puts("PASS scroller insets: horizontal scroller clear of line numbers, gutter width changes, host insets kept");
 }
 
 static int SCECompareDoubles(const void *a, const void *b) {
@@ -1000,6 +1046,7 @@ int main(int argc, const char *argv[]) {
         SCECheckLayoutAndViewport();
         SCECheckSearchQueries();
         SCECheckEditorSearch();
+        SCECheckScrollerInsets();
         SCECheckCount += SCECheckEditorInteractions();
         SCECheckCount += SCECheckSyntaxCore();
         SCECheckCount += SCECheckConfiguredEditing();
